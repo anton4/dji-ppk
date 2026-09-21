@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
+import tempfile
 import time
 import traceback
 from pathlib import Path
@@ -26,24 +28,33 @@ def _span(path: Path) -> tuple | None:
         return None
 
 
-def resolve_base(flight: Flight, base_dir: Path | None, workdir: Path) -> Path | None:
+def resolve_base(flight: Flight, base_dir: Path | None, workdir: Path | None = None) -> Path | None:
     """Base file inside the flight folder wins; otherwise the first file in base_dir covering the flight."""
     span = _span(flight.obs)
     candidates = find_base_candidates(flight.directory)
     if base_dir and base_dir.is_dir():
         candidates += find_base_candidates(base_dir)
-    for cand in candidates:
-        try:
-            plain = prepare_obs(cand, workdir / "basecheck")
-        except Exception as exc:  # noqa: BLE001
-            log.warning("cannot unpack %s: %s", cand, exc)
-            continue
-        bspan = _span(plain)
-        if not span or not bspan or None in span or None in bspan:
-            continue
-        if bspan[0] <= span[0] and bspan[1] >= span[1]:
-            return cand
-    return None
+    # Unpack compressed candidates into a temporary directory, not into the output folder, so a
+    # flight without a covering base does not get an empty work/ directory next to its photos.
+    scratch = tempfile.mkdtemp(prefix="ppk-basecheck-")
+    try:
+        for cand in candidates:
+            try:
+                plain = prepare_obs(cand, scratch)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("cannot unpack %s: %s", cand, exc)
+                continue
+            bspan = _span(plain)
+            if not span or not bspan or None in span or None in bspan:
+                log.debug("%s: cannot determine observation span", cand.name)
+                continue
+            if bspan[0] <= span[0] and bspan[1] >= span[1]:
+                return cand
+            log.info("%s covers %s - %s, flight needs %s - %s: skipped", cand.name,
+                     bspan[0], bspan[1], span[0], span[1])
+        return None
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
 
 
 def watch(flights_dir: Path, base_dir: Path | None, out_dir: Path, process_fn, poll_seconds: int = 30,
