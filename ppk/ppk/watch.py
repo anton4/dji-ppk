@@ -10,7 +10,7 @@ import traceback
 from pathlib import Path
 
 from .discover import find_flights, group_by_folder, Flight
-from .rinex import find_base_candidates, read_header, scan_obs_span, prepare_obs
+from .rinex import find_base_candidates, read_header, scan_obs_span, prepare_obs, has_nav_files
 from .timeutil import span_local
 
 log = logging.getLogger("ppk.watch")
@@ -35,6 +35,7 @@ def resolve_base(flight: Flight, base_dir: Path | None, workdir: Path | None = N
     candidates = find_base_candidates(flight.directory)
     if base_dir and base_dir.is_dir():
         candidates += find_base_candidates(base_dir)
+    candidates.sort(key=lambda p: not has_nav_files(p))  # a base with navigation files wins over one without
     # Unpack compressed candidates into a temporary directory, not into the output folder, so a
     # flight without a covering base does not get an empty work/ directory next to its photos.
     scratch = tempfile.mkdtemp(prefix="ppk-basecheck-")

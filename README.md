@@ -228,6 +228,9 @@ Emlid Studio (verified to ~1 mm). Image names are the real `DJI_..._NNNN_V.JPG` 
 - Time zones: the DJI folder name and the ESTPOS order form use Estonian time, so the order text and the log lines
   about time spans lead with Estonian time (`TZ`, default `Europe/Tallinn`). RTKLIB output, `events.csv` and the
   values in parentheses are GPST, which is UTC + 18 s.
+- A base file without navigation files (a plain `.26o` downloaded by hand) is treated as insufficient: the status
+  shows `order`, and `run` orders the ESTPOS zip, which contains them. A base with navigation files is preferred when
+  both are in the folder.
 - **DJI `.NAV` files carry GPS ephemerides dated 1024 weeks early** (2007 instead of 2026, the GPS week rollover
   bug). RTKLIB silently ignores them, so with the rover NAV alone GPS satellites are not used at all. Always
   download the ESTPOS base **as the zip with its navigation files**: the processor extracts and uses them, and
