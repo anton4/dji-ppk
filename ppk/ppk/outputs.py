@@ -4,12 +4,13 @@ from __future__ import annotations
 import csv
 import json
 import math
+import statistics
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 
 from .mrk import MrkEvent
-from .offsets import apply_ned_offset
+from .offsets import apply_ned_offset, ned_difference
 from .pos import PosRow
 from .timeutil import fmt
 
@@ -132,3 +133,117 @@ def write_summary(path: Path, summary: dict) -> None:
             return str(o)
         return str(o)
     path.write_text(json.dumps(summary, indent=2, default=default) + "\n")
+
+
+def _stats_mm(values: list[float]) -> dict[str, float]:
+    if not values:
+        return {}
+    v = sorted(values)
+    return {"median": round(1000 * statistics.median(v), 1), "p95": round(1000 * v[min(len(v) - 1, int(0.95 * len(v)))], 1),
+            "max": round(1000 * v[-1], 1)}
+
+
+def solution_quality(matched: list[CameraEvent], n_mrk: int, traj_rows: list) -> dict:
+    """Quality figures of a solution without any external reference: fix counts, satellites, RTKLIB's own
+    standard deviations of the photo positions and the ambiguity ratio test."""
+    fixed = [e for e in matched if e.q == 1]
+    ns = sorted(e.ns for e in matched)
+    ratios = sorted(e.ratio for e in fixed if e.ratio > 0)
+    duration = (traj_rows[-1].time - traj_rows[0].time).total_seconds() if len(traj_rows) > 1 else 0.0
+    q = {
+        "photos": {"mrk": n_mrk, "solved": len(matched), "fixed": len(fixed),
+                   "float": sum(1 for e in matched if e.q == 2), "other": sum(1 for e in matched if e.q not in (1, 2)),
+                   "unsolved": n_mrk - len(matched)},
+        "trajectory": {"epochs": len(traj_rows), "fixed": sum(1 for r in traj_rows if r.q == 1),
+                       "float": sum(1 for r in traj_rows if r.q == 2), "seconds": round(duration)},
+        "satellites": {"min": ns[0], "median": statistics.median(ns), "max": ns[-1]} if ns else {},
+        "std_mm": {"north": _stats_mm([e.sdn for e in fixed]), "east": _stats_mm([e.sde for e in fixed]),
+                   "up": _stats_mm([e.sdu for e in fixed]),
+                   "horizontal": _stats_mm([math.hypot(e.sdn, e.sde) for e in fixed])},
+        "ar_ratio": {"min": round(ratios[0], 1), "median": round(statistics.median(ratios), 1)} if ratios else {},
+    }
+    return q
+
+
+def format_quality(q: dict, flight_name: str, base_name: str, baseline_km: float | None, reference: str | None) -> str:
+    ph, tr, sat, sd, ar = q["photos"], q["trajectory"], q.get("satellites", {}), q["std_mm"], q.get("ar_ratio", {})
+    fix_pct = 100 * ph["fixed"] / ph["mrk"] if ph["mrk"] else 0.0
+    traj_pct = 100 * tr["fixed"] / tr["epochs"] if tr["epochs"] else 0.0
+
+    def sd_row(name: str, st: dict[str, float]) -> str:
+        return f" {name:<12} median {st['median']:6.1f}   p95 {st['p95']:6.1f}   max {st['max']:6.1f}" if st else f" {name:<12} (no fixed photos)"
+
+    lines = [
+        "=" * 78,
+        f" Solution quality: {flight_name}",
+        "=" * 78,
+        f" base:         {base_name}" + (f"   baseline {baseline_km:.2f} km" if baseline_km is not None else ""),
+        f" photos:       {ph['fixed']}/{ph['mrk']} fixed ({fix_pct:.1f} %), {ph['float']} float, {ph['other']} other, {ph['unsolved']} unsolved",
+        f" trajectory:   {tr['fixed']}/{tr['epochs']} epochs fixed ({traj_pct:.1f} %), {tr['float']} float, {tr['seconds'] // 60:.0f} min {tr['seconds'] % 60:.0f} s",
+    ]
+    if sat:
+        lines.append(f" satellites:   {sat['min']} - {sat['max']} per photo (median {sat['median']:.0f})")
+    if ar:
+        lines.append(f" AR ratio:     median {ar['median']}, min {ar['min']}  (RTKLIB fix validation, >= 3 required)")
+    lines += ["-" * 78, " RTKLIB estimated standard deviation of fixed photo positions, in millimetres:",
+              sd_row("north", sd["north"]), sd_row("east", sd["east"]), sd_row("up", sd["up"]), sd_row("horizontal", sd["horizontal"]),
+              "-" * 78]
+    if reference:
+        lines.append(f" reference:    compared with {reference}, see compare_report.txt")
+    else:
+        lines.append(" reference:    none (no Emlid Studio *_events.pos in the flight folder, so no comparison)")
+    lines.append("=" * 78)
+    return "\n".join(lines)
+
+
+DJI_Q_LABEL = {50: "fixed", 16: "float", 34: "float", 1: "single", 0: "none"}
+
+
+def rtk_vs_ppk(matched: list[CameraEvent]) -> dict:
+    """Compare the drone's on-board RTK antenna positions from the .MRK (D-RTK 3 or NTRIP) with the PPK
+    antenna positions. The mean is the base position error of the on-board RTK (e.g. a PPP-surveyed D-RTK 3),
+    the standard deviation is the RTK noise."""
+    rows = [e for e in matched if e.q == 1 and e.mrk_q == 50 and e.mrk_lat and e.mrk_lon]
+    if len(rows) < 2:
+        return {"n": len(rows), "mrk_q": _count_q(matched)}
+    dn, de, du = zip(*(ned_difference(e.mrk_lat, e.mrk_lon, e.mrk_ellh, e.ant_lat, e.ant_lon, e.ant_h) for e in rows))
+
+    def st(v):
+        return {"mean_mm": round(1000 * statistics.fmean(v), 1), "std_mm": round(1000 * statistics.pstdev(v), 1),
+                "min_mm": round(1000 * min(v), 1), "max_mm": round(1000 * max(v), 1)}
+    mn, me, mu = statistics.fmean(dn), statistics.fmean(de), statistics.fmean(du)
+    return {"n": len(rows), "mrk_q": _count_q(matched), "north": st(dn), "east": st(de), "up": st(du),
+            "offset_horizontal_mm": round(1000 * math.hypot(mn, me), 1), "offset_3d_mm": round(1000 * math.sqrt(mn * mn + me * me + mu * mu), 1),
+            "scatter_horizontal_mm": round(1000 * math.hypot(statistics.pstdev(dn), statistics.pstdev(de)), 1)}
+
+
+def _count_q(matched: list[CameraEvent]) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for e in matched:
+        k = DJI_Q_LABEL.get(e.mrk_q, str(e.mrk_q))
+        out[k] = out.get(k, 0) + 1
+    return out
+
+
+def format_rtk_vs_ppk(r: dict) -> str:
+    lines = ["=" * 78, " Drone on-board RTK (.MRK, D-RTK 3 / NTRIP base) vs PPK, antenna positions", "=" * 78]
+    qs = ", ".join(f"{v} {k}" for k, v in sorted(r.get("mrk_q", {}).items(), key=lambda kv: -kv[1]))
+    lines.append(f" MRK RTK status:  {qs}")
+    if "north" not in r:
+        lines += [" (not enough photos with both RTK fixed and PPK fixed for statistics)", "=" * 78]
+        return "\n".join(lines)
+    lines.append(f" compared photos: {r['n']} (RTK fixed and PPK fixed)")
+    lines.append("-" * 78)
+    lines.append(" PPK - RTK, in millimetres:      mean (= RTK base position error)   std (= RTK noise)")
+    for k in ("north", "east", "up"):
+        s = r[k]
+        lines.append(f" {k:<10} {s['mean_mm']:+29.1f} {s['std_mm']:22.1f}   (range {s['min_mm']:+.0f} .. {s['max_mm']:+.0f})")
+    lines.append("-" * 78)
+    lines.append(f" RTK base offset: {r['offset_horizontal_mm'] / 10:.1f} cm horizontal, {r['up']['mean_mm'] / 10:+.1f} cm up, "
+                 f"{r['offset_3d_mm'] / 10:.1f} cm 3D  -> this is how far the on-board RTK base position was off")
+    lines.append(f" RTK scatter:     {r['scatter_horizontal_mm']:.1f} mm horizontal, {r['up']['std_mm']:.1f} mm up (1 sigma)")
+    lines.append(" The mean offset is the correction PPK applies to the whole flight (PPP-surveyed D-RTK 3 bases are")
+    lines.append(" typically off by decimetres). Horizontal scatter mostly reflects the drone's motion between the")
+    lines.append(" on-board RTK epoch and the exposure instant, so it grows with flight speed; up scatter is the RTK noise.")
+    lines.append("=" * 78)
+    return "\n".join(lines)
