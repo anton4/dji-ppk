@@ -35,18 +35,36 @@ cpath() { # folder name or host path -> path inside the containers
 
 cmd_status() { ppk status /data/flights "$@"; }
 
+STATUS_JSON=""
+scan() { # one container run; the table and the menu list are both rendered from this JSON
+  echo "${D}scanning FLIGHTS_DIR ...${N}" >&2
+  STATUS_JSON="$(ppk status /data/flights --json 2>/dev/null)" || die "cannot list flights (is the image built? ./dji-ppk build)"
+}
+render_table() {
+  python3 -c '
+import json, sys
+rows = json.load(sys.stdin)
+if not rows:
+    print("no flight folders (OBS/NAV/MRK triplets) found"); sys.exit()
+head = ["folder", "sess/photos", "flown", "base", "result", "next"]
+table = [head] + [[r["folder"], str(r["sessions"]) + "/" + str(r["photos"]), r["flown"], r["base"], r["result"], r["next"]] for r in rows]
+w = [max(len(str(x[i])) for x in table) for i in range(len(head))]
+for n, row in enumerate(table):
+    print("  ".join(str(c).ljust(k) for c, k in zip(row, w)).rstrip())
+    if n == 0: print("  ".join("-" * k for k in w))' <<< "$STATUS_JSON"
+}
 pending_folders() { # names of folders whose next step is not "done"
-  ppk status /data/flights --json 2>/dev/null | python3 -c '
+  python3 -c '
 import json, sys
 for r in json.load(sys.stdin):
     if r["next"] != "done":
-        print(r["folder"])'
+        print(r["folder"])' <<< "$STATUS_JSON"
 }
 all_folders() {
-  ppk status /data/flights --json 2>/dev/null | python3 -c '
+  python3 -c '
 import json, sys
 for r in json.load(sys.stdin):
-    print(r["folder"] + "\t" + r["next"])'
+    print(r["folder"] + "\t" + r["next"])' <<< "$STATUS_JSON"
 }
 
 cmd_order()   { need_env; need_creds; estpos estpos-order "$(cpath "$1")" "${@:2}"; }
@@ -68,6 +86,7 @@ cmd_run() {
 }
 
 cmd_run_all() {
+  [[ -n "$STATUS_JSON" ]] || scan
   local list; list="$(pending_folders)"
   [[ -n "$list" ]] || { echo "${G}nothing to do: every folder is done${N}"; return 0; }
   while IFS= read -r f; do cmd_run "$f"; done <<< "$list"
@@ -80,7 +99,8 @@ menu() {
   need_env
   while true; do
     echo; echo "${B}Flight folders under FLIGHTS_DIR${N}"
-    cmd_status || die "cannot list flights (is the image built? ./dji-ppk build)"
+    scan
+    render_table
     echo
     local -a names nexts
     names=(); nexts=()

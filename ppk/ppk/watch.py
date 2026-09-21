@@ -58,6 +58,15 @@ def resolve_base(flight: Flight, base_dir: Path | None, workdir: Path | None = N
         shutil.rmtree(scratch, ignore_errors=True)
 
 
+def _already_done(directory: Path, group: list[Flight], base_dir: Path | None) -> bool:
+    """Same rule as `ppk status`: a summary.json newer than every input and base file, covering all sessions."""
+    try:
+        from .status import folder_status, NEXT_DONE
+        return folder_status(directory, group, base_dir).next == NEXT_DONE
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def watch(flights_dir: Path, base_dir: Path | None, out_dir: Path, process_fn, poll_seconds: int = 30,
           once: bool = False, settle_seconds: int = 120, in_place: bool = False) -> None:
     from .cli import _out_dir_for  # local import to avoid a cycle
@@ -80,6 +89,9 @@ def watch(flights_dir: Path, base_dir: Path | None, out_dir: Path, process_fn, p
             target = _out_dir_for(out_dir, fl, in_place)
             done, failed = target / "DONE", target / "FAILED.log"
             if done.exists() and seen.get(key, sig) == sig:
+                continue
+            if in_place and seen.get(key) is None and _already_done(directory, group, base_dir):
+                seen[key] = sig  # results are newer than every input and base: nothing to do
                 continue
             if failed.exists() and seen.get(key) == sig:
                 continue  # already failed with these inputs; wait for them to change
