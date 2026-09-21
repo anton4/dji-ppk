@@ -3,10 +3,13 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 
 IMAGE_RE = re.compile(r"_(\d{4})(?:_([A-Z]))?\.(?:JPG|JPEG|DNG)$", re.I)
+IMAGE_TS_RE = re.compile(r"^DJI_(\d{14})_\d{4}", re.I)  # capture time (local) in the file name
 PREFERRED_CAMERA = "V"  # DJI suffixes: V visible, W wide, Z zoom, T thermal
+SESSION_MARGIN = timedelta(minutes=2)
 
 
 @dataclass
@@ -33,14 +36,29 @@ def _sibling(base: Path, ext: str) -> Path | None:
     return None
 
 
-def index_images(directory: Path) -> dict[int, Path]:
+def image_timestamp(path: Path) -> datetime | None:
+    """Local capture time encoded in a DJI file name, e.g. DJI_20260905113447_0001_V.JPG."""
+    m = IMAGE_TS_RE.match(path.name)
+    try:
+        return datetime.strptime(m.group(1), "%Y%m%d%H%M%S") if m else None
+    except ValueError:
+        return None
+
+
+def index_images(directory: Path, window: tuple[datetime, datetime] | None = None) -> dict[int, Path]:
+    """Photo index -> file. `window` (local times) keeps only photos taken in that span, which separates two
+    flight sessions stored in one folder: DJI restarts the index at 0001 for every session."""
     found: dict[int, dict[str, Path]] = {}
-    for p in directory.iterdir():
+    for p in sorted(directory.iterdir()):
         if not p.is_file():
             continue
         m = IMAGE_RE.search(p.name)
         if not m:
             continue
+        if window:
+            ts = image_timestamp(p)
+            if ts is not None and not (window[0] - SESSION_MARGIN <= ts <= window[1] + SESSION_MARGIN):
+                continue
         found.setdefault(int(m.group(1)), {})[(m.group(2) or "").upper()] = p
     out: dict[int, Path] = {}
     for idx, cams in found.items():
@@ -60,8 +78,23 @@ def find_flights(root: str | Path, recursive: bool = True) -> list[Flight]:
         nav = _sibling(base, ".nav")
         mrk = _sibling(base, ".mrk")
         if nav and mrk:
-            flights.append(Flight(obs.parent, obs, nav, mrk, index_images(obs.parent)))
+            flights.append(Flight(obs.parent, obs, nav, mrk, index_images(obs.parent, session_window(mrk))))
     return flights
+
+
+def session_window(mrk_path: Path) -> tuple[datetime, datetime] | None:
+    """Local time span of the camera events in a .MRK, for picking this session's photos."""
+    try:
+        from .mrk import parse_mrk
+        from .timeutil import gpst_to_local
+        events = parse_mrk(mrk_path)
+        if not events:
+            return None
+        first = gpst_to_local(events[0].time).replace(tzinfo=None)
+        last = gpst_to_local(events[-1].time).replace(tzinfo=None)
+        return first, last
+    except Exception:  # noqa: BLE001 - unreadable MRK: fall back to all photos
+        return None
 
 
 def load_flight(path: str | Path) -> Flight:

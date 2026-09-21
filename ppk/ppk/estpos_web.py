@@ -35,7 +35,7 @@ LANG_ET = "/sbc/Home/SetLanguage?lang=et"
 def dms(value: float, deg_width: int) -> tuple[str, str]:
     """(digits for the input mask, human readable) for a positive angle.
 
-    58.4014069 -> ("582405065", "58° 24' 05.065\\"") with deg_width=2; longitudes use deg_width=3.
+    59.4372403 -> ("592614065", "59° 26' 14.065\\"") with deg_width=2; longitudes use deg_width=3.
     """
     total_ms = round(abs(value) * 3600 * 1000)  # milliarcseconds
     deg, rem = divmod(total_ms, 3600 * 1000)
@@ -129,13 +129,26 @@ def _browser(headed: bool):
     return pw, browser, context
 
 
+def _dismiss_cookie_dialog(page) -> None:
+    """The portal shows a modal (#dialogAcceptCookiePolicy) that intercepts every click until accepted."""
+    dlg = page.locator("#dialogAcceptCookiePolicy")
+    try:
+        dlg.wait_for(state="visible", timeout=4_000)
+    except Exception:  # noqa: BLE001 - no dialog this time
+        return
+    btn = dlg.locator("button.btn-primary, button:has-text('Accept'), button:has-text('Nõus'), button:has-text('OK')").first
+    if btn.count():
+        btn.click()
+    try:
+        dlg.wait_for(state="hidden", timeout=5_000)
+    except Exception:  # noqa: BLE001 - remove it by force
+        page.evaluate("() => { document.querySelectorAll('#dialogAcceptCookiePolicy, .modal-backdrop').forEach(e => e.remove()); document.body.classList.remove('modal-open'); }")
+    log.debug("cookie dialog dismissed")
+
+
 def login(page, user: str, password: str) -> None:
     page.goto(PORTAL + "/sbc")
-    for label in ("Accept", "Nõustun", "Nõustu"):
-        btn = page.get_by_role("button", name=label)
-        if btn.count():
-            btn.first.click()
-            break
+    _dismiss_cookie_dialog(page)
     if "/Account/" in page.url:
         form = page.locator("form").filter(has=page.locator("input[type=password]")).first
         form.locator("input[type=text]").first.fill(user)
@@ -150,8 +163,13 @@ def login(page, user: str, password: str) -> None:
 
 
 def _wait_availability(page, action, timeout_ms: int = 20_000) -> dict:
-    """Run `action()` and return the parameters of the dataAvailability request it triggers."""
-    with page.expect_request(lambda r: "vrinex/dataAvailability" in r.url, timeout=timeout_ms) as info:
+    """Run `action()` and return the parameters of the availability request it triggers.
+
+    Before the Virtual RINEX panel is open the page queries /rinexavailability/sites (start/end only); after
+    that /vrinex/dataAvailability (start/end/lat/lon/rate/name). Both carry the exact values the form holds.
+    """
+    with page.expect_request(lambda r: "vrinex/dataAvailability" in r.url or "rinexavailability/sites" in r.url,
+                             timeout=timeout_ms) as info:
         action()
     return availability_params(info.value.url)
 
@@ -163,21 +181,21 @@ def fill_order_form(page, order: EstposOrder, project: str, rate_s: int = 1, hei
     """
     page.goto(PORTAL + ORDER_PAGE)
     page.wait_for_selector("#enableVRinex")
+    max_len = page.evaluate("() => document.getElementById('projectName').maxLength") or 0
+    if max_len > 0 and len(project) > max_len:
+        log.warning("project name %r is longer than the portal's %d characters, using %r", project, max_len, project[:max_len])
+        project = project[:max_len]
 
     # 1. start time (Estonian local, 'yyyy-mm-dd h:ii', hour without leading zero)
     start_text = f"{order.start_local:%Y-%m-%d} {order.start_local.hour}:{order.start_local:%M}"
-    visible = page.locator("input.startDateInput")
 
     def set_start():
-        visible.click()
-        visible.press("Control+a")
-        visible.fill(start_text)
-        visible.press("Enter")
-        page.keyboard.press("Escape")
-        page.evaluate("v => { const h = document.getElementById('startDateInput'); if (h && h.value !== v) { h.value = v; h.dispatchEvent(new Event('change', {bubbles: true})); } }", start_text)
-        page.locator("#projectName").click()
+        # the visible input is read-only; the smalot datetimepicker on #startDate owns it and the page
+        # listens to 'change' on that element
+        page.evaluate("v => { const $d = window.jQuery('#startDate'); $d.datetimepicker('update', v); $d.trigger('change'); }", start_text)
     try:
-        _wait_availability(page, set_start)
+        p = _wait_availability(page, set_start)
+        log.debug("after start: %s - %s UTC", p["start_utc"], p["end_utc"])
     except Exception:  # noqa: BLE001 - the page may not fire on an unchanged value; verified at the end anyway
         log.debug("no availability request after setting the start time")
 
@@ -186,29 +204,30 @@ def fill_order_form(page, order: EstposOrder, project: str, rate_s: int = 1, hei
     hours = min(max(hours, 0.25), 24)
 
     def set_slider():
+        # seiyria bootstrap-slider registers as bootstrapSlider because jQuery UI's slider is also loaded
         page.evaluate(
-            """h => { const $s = window.jQuery('#timeSlider'); $s.slider('setValue', h, true, true);
-                     $s.trigger('slideStop', h); $s.trigger('change', {oldValue: 0, newValue: h}); }""",
+            """h => { const $s = window.jQuery('#timeSlider');
+                     if ($s.bootstrapSlider) { $s.bootstrapSlider('setValue', h, true, true); }
+                     else { $s.slider('setValue', h, true, true); } }""",
             hours)
     try:
-        _wait_availability(page, set_slider)
+        p = _wait_availability(page, set_slider)
+        log.debug("after slider: %s - %s UTC", p["start_utc"], p["end_utc"])
     except Exception:  # noqa: BLE001
         log.debug("no availability request after setting the slider")
 
     # 3. Virtual RINEX point
-    cb = page.locator("#enableVRinex")
-    if not cb.is_checked():
-        cb.check()
-        page.wait_for_selector("#vRinexLat")
-    lat_digits, lat_text = dms(order.lat, 2)
-    lon_digits, lon_text = dms(order.lon, 3)
-    for sel, digits in (("#vRinexLat", lat_digits), ("#vRinexLog", lon_digits)):
-        el = page.locator(sel)
-        el.click()
-        el.press("Control+a")
-        el.press("Backspace")
-        el.type(digits, delay=20)
-        el.press("Tab")
+    # styled checkbox: the real <input> is hidden, so click it through the DOM
+    if not page.evaluate("() => document.getElementById('enableVRinex').checked"):
+        page.evaluate("() => document.getElementById('enableVRinex').click()")
+    page.wait_for_selector("#vRinexLat", state="visible")
+    _, lat_text = dms(order.lat, 2)
+    _, lon_text = dms(order.lon, 3)
+    # the fields use jquery.inputmask; a formatted value through val() + input/change/blur is accepted
+    page.evaluate("""([la, lo]) => { const $ = window.jQuery;
+        $('#vRinexLat').val(la).trigger('input').trigger('change').trigger('blur');
+        $('#vRinexLog').val(lo).trigger('input').trigger('change').trigger('blur'); }""",
+                  [f"{lat_text} N", f"{lon_text} E"])
     if height is not None:
         page.locator("#vRinexHeight").fill(f"{height:.2f}")
     page.locator("#vRinexMarkerName").fill("Virtual RINEX")
@@ -230,14 +249,20 @@ def fill_order_form(page, order: EstposOrder, project: str, rate_s: int = 1, hei
     if problems:
         raise RuntimeError("the portal form does not match the order, not submitting:\n  - " + "\n  - ".join(problems))
     log.info("form verified: %s local, %.2f h, %s %s", start_text, hours, lat_text, lon_text)
+    params["project"] = project
     return params
 
 
 def submit_order(page) -> None:
-    """Click 'Esita' and wait for the portal to accept the request."""
+    """Click 'Esita', confirm the summary dialog ('Kinnita') and wait for the portal to accept the request."""
     btn = page.get_by_role("button", name=re.compile(r"^(Esita|Submit)$"))
+    btn.first.click()
+    confirm = page.get_by_role("button", name=re.compile(r"^(Kinnita|Confirm)$"))
+    confirm.first.wait_for(state="visible", timeout=15_000)
+    summary = page.locator(".modal:visible, [role=dialog]:visible").first.inner_text()
+    log.info("portal summary before confirming:\n%s", re.sub(r"\d{2} ° \d{2} ' [\d.]+ \" [NE]", "<dms>", summary).strip())
     with page.expect_response(lambda r: "/Xpos/API" in r.url and r.request.method == "POST", timeout=60_000) as info:
-        btn.first.click()
+        confirm.first.click()
     resp = info.value
     if resp.status >= 400:
         raise RuntimeError(f"the portal rejected the order: HTTP {resp.status} {resp.url}\n{resp.text()[:500]}")
@@ -315,11 +340,12 @@ def order_and_download(order: EstposOrder, project: str, dest_dir: Path, user: s
                        rate_s: int = 1, height: float | None = None, wait: bool = True, timeout_min: float = 60,
                        headed: bool = False, dry_run: bool = False, screenshot: Path | None = None) -> Path | None:
     pw, browser, context = _browser(headed)
+    page = None
     try:
         page = context.new_page()
         login(page, user, password)
         since = datetime.now().replace(microsecond=0) - timedelta(minutes=2)
-        fill_order_form(page, order, project, rate_s, height)
+        project = fill_order_form(page, order, project, rate_s, height)["project"]
         if screenshot:
             page.screenshot(path=str(screenshot), full_page=True)
             log.info("form screenshot saved to %s", screenshot)
@@ -332,10 +358,25 @@ def order_and_download(order: EstposOrder, project: str, dest_dir: Path, user: s
             return None
         entry = wait_for_result(page, project, since, timeout_min)
         return download_entry(page, entry, dest_dir)
+    except Exception:
+        _error_screenshot(page, dest_dir)
+        raise
     finally:
         context.close()
         browser.close()
         pw.stop()
+
+
+def _error_screenshot(page, dest_dir: Path) -> None:
+    if page is None:
+        return
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        target = dest_dir / "estpos_error.png"
+        page.screenshot(path=str(target), full_page=True)
+        log.error("screenshot of the failing page saved to %s (url %s)", target, page.url)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def download_existing(project: str, dest_dir: Path, user: str, password: str, *, since: datetime | None = None,
