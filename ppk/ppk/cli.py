@@ -299,6 +299,16 @@ def _estpos_credentials() -> tuple[str, str]:
     return user, pw
 
 
+def _project_names(folder: str, n_orders: int, explicit: str | None) -> list[list[str]]:
+    """Per order: the portal project name to use, followed by older spellings accepted when matching."""
+    from . import estpos_web
+    if explicit:
+        return [[explicit[:30]]] if n_orders == 1 else [[f"{explicit[:28]}-{i}"] for i in range(1, n_orders + 1)]
+    if n_orders == 1:
+        return [estpos_web.project_candidates(folder)]
+    return [[f"{estpos_web.project_name(folder, 28)}-{i}", f"{folder[:28]}-{i}"] for i in range(1, n_orders + 1)]
+
+
 def cmd_estpos_order(a: argparse.Namespace) -> int:
     """Order a Virtual RINEX for a flight on the ESTPOS portal and download it into the flight folder."""
     try:
@@ -325,11 +335,7 @@ def cmd_estpos_order(a: argparse.Namespace) -> int:
         return 2
     if left <= 7:
         log.warning("only %d day(s) left before ESTPOS drops the RINEX data for this flight", left)
-    if len(orders) > 1:
-        base_project = a.project[:28] if a.project else estpos_web.project_name(flight.name, 28)
-        projects = [f"{base_project}-{i}" for i in range(1, len(orders) + 1)]
-    else:
-        projects = [a.project or estpos_web.project_name(flight.name)]
+    projects = _project_names(flight.name, len(orders), a.project)
     for order, _fls in orders:
         if order.duration > timedelta(hours=a.max_hours):
             log.warning("order of %.2f h exceeds the %.1f h limit (one session is that long); the portal may refuse it",
@@ -371,10 +377,7 @@ def cmd_estpos_download(a: argparse.Namespace) -> int:
         else:
             # same planning as estpos-order, so the project names and spans match what was ordered before
             orders = plan_orders(flights, a.buffer, None, a.max_hours)
-            if len(orders) == 1:
-                projects = [estpos_web.project_name(flight.name)]
-            else:
-                projects = [f"{estpos_web.project_name(flight.name, 28)}-{i}" for i in range(1, len(orders) + 1)]
+            projects = _project_names(flight.name, len(orders), None)
             paths = estpos_web.download_for_orders([(o, p) for (o, _f), p in zip(orders, projects)], flight.directory, user, pw,
                                                    timeout_min=a.timeout, headed=a.headed)
     except estpos_web.NotOrdered as exc:

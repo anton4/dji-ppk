@@ -448,3 +448,14 @@ def test_project_name_unique_and_legacy():
     assert project_name("short name") == "short name"
     assert project_candidates(a)[1] == a[:30] and project_candidates("short name") == ["short name"]
     assert len(project_name(a, 28)) <= 28
+
+
+def test_project_names_per_order():
+    from ppk.cli import _project_names
+    long = "2026-07-26 mõisavärava pargi ehitus 1 4D"
+    one = _project_names(long, 1, None)
+    assert len(one) == 1 and one[0][1] == long[:30] and "~" in one[0][0]
+    two = _project_names(long, 2, None)
+    assert [n[0][-2:] for n in two] == ["-1", "-2"] and two[1][1] == long[:28] + "-2"
+    assert _project_names("DJI_x", 1, None) == [["DJI_x"]]
+    assert _project_names("DJI_x", 1, "custom") == [["custom"]]
