@@ -47,7 +47,7 @@ Build any other version with `RTKLIB_REF=<tag|branch> docker compose --profile c
 ## Layout
 
 ```
-dji-ppk              host launcher: menu / run / status, drives the two containers
+dji-ppk              host launcher (python3): checkbox menu / run / status, drives the two containers
 Dockerfile           multi-stage build: RTKLIB-EX (rnx2rtkp, convbin, pos2kml), crx2rnx, IGS ANTEX, python package
 Dockerfile.estpos    Playwright + Chromium image for ordering Virtual RINEX on the ESTPOS portal (`ppk-estpos` service)
 compose.yaml         services `ppk` (one-shot CLI), `ppk-estpos` (portal automation), both profile "cli", and `ppk-watch`
@@ -70,8 +70,9 @@ cp .env.example .env     # FLIGHTS_DIR = folder that holds the DJI flight folder
 ./dji-ppk                # interactive menu
 ```
 
-`./dji-ppk` is a small launcher on the host that drives the two containers. Without arguments it shows one line
-per flight folder and lets you pick what to do:
+`./dji-ppk` is a small Python launcher on the host (standard library only, needs `python3` and Docker with the
+compose plugin) that drives the two containers. Without arguments it shows one line per flight folder and lets
+you pick what to do:
 
 ```
 folder                              sess/photos  flown                          base                result                              next
@@ -218,6 +219,13 @@ Emlid Studio (verified to ~1 mm). Image names are the real `DJI_..._NNNN_V.JPG` 
   bug). RTKLIB silently ignores them, so with the rover NAV alone GPS satellites are not used at all. Always
   download the ESTPOS base **as the zip with its navigation files**: the processor extracts and uses them, and
   logs a warning when the rover NAV is unusable for a constellation.
+
+## Output
+
+Logs are colored when you run in a terminal (the launcher passes `PPK_COLOR=1`; set `NO_COLOR=1` to disable):
+processing shows five numbered steps, one green/yellow/red verdict line per session, colored PASS/WARN/FAIL for
+the base checks and colored `next` states in the status table. Files on disk (`accuracy.txt`, `compare_report.txt`)
+stay plain text.
 
 ## Development
 
