@@ -9,6 +9,9 @@ description = "DJI drone PPK processing with RTKLIB-EX against ESTPOS base RINEX
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+estpos = ["playwright>=1.47"]
+
 [project.scripts]
 ppk = "ppk.cli:main"
 

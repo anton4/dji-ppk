@@ -257,3 +257,41 @@ def test_find_reference_events_skips_own_output(tmp_path):
     shutil.copy(FIX / "sample_events.pos", tmp_path / "DJI_x_events.pos")
     shutil.copy(FIX / "sample_events.pos", tmp_path / "DJI_x_trajectory_events.pos")
     assert [p.name for p in find_reference_events(tmp_path)] == ["DJI_x_events.pos"]
+
+
+def test_estpos_dms_and_order_check():
+    from datetime import timedelta
+    from ppk.estpos import EstposOrder
+    from ppk.estpos_web import dms, availability_params, order_mismatch
+    digits, text = dms(59.4372403, 2)
+    assert digits == "592614065" and text == "59° 26' 14.065\""
+    digits, text = dms(24.7535747, 3)
+    assert digits == "0244512869" and text == "024° 45' 12.869\""
+    assert dms(59.9999999, 2)[0] == "600000000"  # carries into the next degree instead of 59° 60'
+    order = EstposOrder(59.4372403, 24.7535747, 45.0, "x", datetime(2026, 9, 18, 14, 18), datetime(2026, 9, 18, 14, 38),
+                        datetime(2026, 9, 18, 14, 0), datetime(2026, 9, 18, 14, 45))
+    url = ("https://gnss-rtk.maaamet.ee/Xpos/API//vrinex/dataAvailability?startTime=2026-09-18T14%3A00%3A00.000Z"
+           "&endTime=2026-09-18T14%3A45%3A00.000Z&latitude=59.4372403&longitude=24.7535747&name=flight1"
+           "&markerName=Virtual%20RINEX&markerNumber=VRNX&sendNotifications=true&observationRate=1000&_=1")
+    params = availability_params(url)
+    assert params["start_utc"] == order.start_utc and params["rate_ms"] == 1000 and params["name"] == "flight1"
+    assert order_mismatch(params, order, 1, "flight1") == []
+    bad = order_mismatch(params, order, 5, "other")
+    assert len(bad) == 2 and "rate" in bad[0] and "project" in bad[1]
+    assert order.start_local.hour == 17  # EEST
+
+
+def test_estpos_result_entry_parsing():
+    from ppk.estpos_web import parse_result_entry, find_entry
+    text = """2. Taotletud 2026-09-21 08:57:42, Projekt: demo week 9
+Soovitatud algusaeg: 2026-09-18 17:00:00
+Kestvus: 01:00 h
+Laiuskraad: 59° 26' 14.065" N
+Lae alla"""
+    e = parse_result_entry(text, "vrinexFileDownloadButton42", True)
+    assert e.requested == datetime(2026, 9, 21, 8, 57, 42) and e.project == "demo week 9"
+    assert e.start_local == datetime(2026, 9, 18, 17, 0) and e.duration_h == 1.0 and e.ready
+    empty = parse_result_entry("1. Taotletud 2026-09-18 11:42\nProjekt:\nTühi\nKestvus: 02:00 h", "b", False)
+    assert empty.project == "" and empty.duration_h == 2.0
+    assert find_entry([e, empty], "demo week 9", datetime(2026, 9, 21)) is e
+    assert find_entry([e], "demo week 9", datetime(2026, 9, 22)) is None

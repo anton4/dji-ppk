@@ -1,0 +1,11 @@
+# Portal automation image: Playwright + Chromium + the ppk package (no RTKLIB).
+# Used by the `ppk-estpos` compose service for `ppk estpos-order` / `ppk estpos-download`.
+FROM mcr.microsoft.com/playwright/python:v1.55.0-noble
+
+WORKDIR /app
+COPY ppk /app/ppk
+RUN pip install --no-cache-dir "/app/ppk[estpos]" && playwright install chromium
+
+ENV PPK_IN_PLACE=1
+ENTRYPOINT ["ppk"]
+CMD ["--help"]

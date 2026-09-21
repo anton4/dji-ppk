@@ -23,6 +23,24 @@ services:
       - ${OUT_DIR:-./data/out}:/data/out
     profiles: ["cli"]
 
+  # ESTPOS portal automation (Playwright + Chromium, separate image). Usage:
+  #   docker compose --profile cli run --rm ppk-estpos estpos-order /data/flights/<flight>
+  #   docker compose --profile cli run --rm ppk-estpos estpos-download /data/flights/<flight> --project <name>
+  # Needs ESTPOS_USER / ESTPOS_PASSWORD in .env.
+  ppk-estpos:
+    build:
+      context: .
+      dockerfile: Dockerfile.estpos
+    image: dji-ppk-estpos
+    environment:
+      TZ: Europe/Tallinn
+      PPK_IN_PLACE: ${PPK_IN_PLACE:-1}
+      ESTPOS_USER: ${ESTPOS_USER:-}
+      ESTPOS_PASSWORD: ${ESTPOS_PASSWORD:-}
+    volumes:
+      - ${FLIGHTS_DIR:-.}:/data/flights
+    profiles: ["cli"]
+
   # Folder watcher: processes every flight folder under /data/flights once a covering
   # base RINEX is available (inside the flight folder or under /data/base). Results are
   # written into the flight folder (PPK_IN_PLACE=1); set PPK_IN_PLACE=0 to use /data/out/<flight>.
