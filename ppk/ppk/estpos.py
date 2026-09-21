@@ -78,24 +78,38 @@ def ground_height_from_image(path: Path) -> float | None:
     return None
 
 
-def plan_order(flight: Flight, buffer_minutes: int = 5, height_override: float | None = None) -> EstposOrder:
-    header = read_header(flight.obs)
-    first, last, _ = scan_obs_span(flight.obs, header)
-    first = first or header.first_obs
-    last = last or header.last_obs
-    if not first or not last:
-        raise ValueError(f"{flight.obs}: cannot determine observation span")
-    mrk = parse_mrk(flight.mrk)
+def _as_list(flights) -> list[Flight]:
+    return list(flights) if isinstance(flights, (list, tuple)) else [flights]
+
+
+def plan_order(flights, buffer_minutes: int = 5, height_override: float | None = None) -> EstposOrder:
+    """One Virtual RINEX order covering one session or every session of a flight day (list of Flight)."""
+    flights = _as_list(flights)
+    first = last = None
+    mrk = []
+    for fl in flights:
+        header = read_header(fl.obs)
+        f, l, _ = scan_obs_span(fl.obs, header)
+        f = f or header.first_obs
+        l = l or header.last_obs
+        if not f or not l:
+            raise ValueError(f"{fl.obs}: cannot determine observation span")
+        first = f if first is None or f < first else first
+        last = l if last is None or l > last else last
+        mrk += parse_mrk(fl.mrk)
     lat = sum(e.lat for e in mrk) / len(mrk)
     lon = sum(e.lon for e in mrk) / len(mrk)
     if height_override is not None:
         height, src = height_override, "override"
     else:
         height = None
-        for idx in sorted(flight.images):
-            height = ground_height_from_image(flight.images[idx])
+        for fl in flights:
+            for idx in sorted(fl.images):
+                height = ground_height_from_image(fl.images[idx])
+                if height is not None:
+                    src = f"AbsoluteAltitude - RelativeAltitude from {fl.images[idx].name}"
+                    break
             if height is not None:
-                src = f"AbsoluteAltitude - RelativeAltitude from {flight.images[idx].name}"
                 break
         if height is None:
             height = min(e.ellh for e in mrk) - 50.0
@@ -106,12 +120,40 @@ def plan_order(flight: Flight, buffer_minutes: int = 5, height_override: float |
     return EstposOrder(lat, lon, height, src, first, last, start, end)
 
 
-def format_order(order: EstposOrder, flight: Flight) -> str:
+def plan_orders(flights, buffer_minutes: int = 5, height_override: float | None = None,
+                max_hours: float = 6.0) -> list[tuple[EstposOrder, list[Flight]]]:
+    """Orders for a flight day. All sessions share one order when it fits into `max_hours` (the portal limit
+    for Virtual RINEX); otherwise sessions are clustered at their gaps so every order stays within the limit.
+    A single session longer than the limit still gets one (too long) order and a warning is left to the caller."""
+    flights = sorted(_as_list(flights), key=lambda f: f.stem)
+    spans = []
+    for fl in flights:
+        header = read_header(fl.obs)
+        f, l, _ = scan_obs_span(fl.obs, header)
+        spans.append((f or header.first_obs, l or header.last_obs))
+    buf = timedelta(minutes=buffer_minutes)
+    clusters: list[list[int]] = []
+    for i, (f, l) in enumerate(spans):
+        if clusters:
+            first = spans[clusters[-1][0]][0]
+            start = floor_quarter(gpst_to_utc(first) - buf)
+            end = ceil_quarter(gpst_to_utc(l) + buf)
+            if (end - start) <= timedelta(hours=max_hours):
+                clusters[-1].append(i)
+                continue
+        clusters.append([i])
+    return [(plan_order([flights[i] for i in idx], buffer_minutes, height_override), [flights[i] for i in idx]) for idx in clusters]
+
+
+def format_order(order: EstposOrder, flights) -> str:
+    flights = _as_list(flights)
+    flight = flights[0]
     dur_min = int(order.duration.total_seconds() // 60)
     tz = order.start_local.tzname()
+    sessions = "" if len(flights) == 1 else f"  ({len(flights)} sessions: " + ", ".join(f.stem for f in flights) + ")"
     lines = [
         "=" * 72,
-        " ESTPOS Virtual RINEX order for flight: " + flight.name,
+        " ESTPOS Virtual RINEX order for flight: " + flight.name + sessions,
         "=" * 72,
         f" Portal:            {PORTAL_URL}  (Post Processing -> RINEX Data -> [x] Virtual RINEX)",
         f" Latitude (deg):    {order.lat:.7f}",
@@ -126,7 +168,7 @@ def format_order(order: EstposOrder, flight: Flight) -> str:
         f" Same in UTC:       {order.start_utc:%Y-%m-%d %H:%M} - {order.end_utc:%H:%M} UTC",
         f" Flight:            {span_local(order.flight_first_gpst, order.flight_last_gpst, seconds=True)}"
         f"  ({order.flight_first_gpst:%H:%M:%S} - {order.flight_last_gpst:%H:%M:%S} GPST)",
-        f" Photos:            {len(flight.images)}",
+        f" Photos:            {sum(len(f.images) for f in flights)}",
         "=" * 72,
         f" After download, copy the .??o/.rnx (or the zip) into {flight.directory} and run:",
         f"   ppk process {flight.directory}",

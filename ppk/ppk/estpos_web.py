@@ -339,25 +339,45 @@ def download_entry(page, entry: ResultEntry, dest_dir: Path) -> Path:
 def order_and_download(order: EstposOrder, project: str, dest_dir: Path, user: str, password: str, *,
                        rate_s: int = 1, height: float | None = None, wait: bool = True, timeout_min: float = 60,
                        headed: bool = False, dry_run: bool = False, screenshot: Path | None = None) -> Path | None:
+    paths = order_and_download_many([(order, project)], dest_dir, user, password, rate_s=rate_s, height=height,
+                                    wait=wait, timeout_min=timeout_min, headed=headed, dry_run=dry_run, screenshot=screenshot)
+    return paths[0] if paths else None
+
+
+def order_and_download_many(orders: list[tuple[EstposOrder, str]], dest_dir: Path, user: str, password: str, *,
+                            rate_s: int = 1, height: float | None = None, wait: bool = True, timeout_min: float = 60,
+                            headed: bool = False, dry_run: bool = False, screenshot: Path | None = None) -> list[Path]:
+    """Place one or more orders (e.g. a long flight day split at the portal's length limit) in one browser
+    session, then wait for and download each of them. Returns the downloaded files (empty for dry runs)."""
     pw, browser, context = _browser(headed)
     page = None
     try:
         page = context.new_page()
         login(page, user, password)
         since = datetime.now().replace(microsecond=0) - timedelta(minutes=2)
-        project = fill_order_form(page, order, project, rate_s, height)["project"]
-        if screenshot:
-            page.screenshot(path=str(screenshot), full_page=True)
-            log.info("form screenshot saved to %s", screenshot)
-        if dry_run:
-            log.info("dry run: not submitting")
-            return None
-        submit_order(page)
-        if not wait:
-            log.info("order placed; fetch it later with: ppk estpos-download <flight> --project %r", project)
-            return None
-        entry = wait_for_result(page, project, since, timeout_min)
-        return download_entry(page, entry, dest_dir)
+        placed: list[str] = []
+        for i, (order, project) in enumerate(orders, 1):
+            if len(orders) > 1:
+                log.info("--- order %d/%d ---", i, len(orders))
+            project = fill_order_form(page, order, project, rate_s, height)["project"]
+            if screenshot:
+                shot = screenshot if len(orders) == 1 else screenshot.with_name(f"{screenshot.stem}_{i}{screenshot.suffix}")
+                page.screenshot(path=str(shot), full_page=True)
+                log.info("form screenshot saved to %s", shot)
+            if dry_run:
+                log.info("dry run: not submitting")
+                continue
+            submit_order(page)
+            placed.append(project)
+        if dry_run or not wait:
+            for project in placed:
+                log.info("order placed; fetch it later with: ppk estpos-download <flight> --project %r", project)
+            return []
+        paths = []
+        for project in placed:
+            entry = wait_for_result(page, project, since, timeout_min)
+            paths.append(download_entry(page, entry, dest_dir))
+        return paths
     except Exception:
         _error_screenshot(page, dest_dir)
         raise
