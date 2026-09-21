@@ -19,12 +19,25 @@ if [[ -t 1 ]]; then B=$'\e[1m'; D=$'\e[2m'; G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m
 
 die() { echo "${R}error:${N} $*" >&2; exit 1; }
 compose() { docker compose --progress quiet --profile cli "$@"; }
+image_tag() { local ref; ref="$(grep -E '^RTKLIB_REF=' .env 2>/dev/null | cut -d= -f2)"; echo "dji-ppk:${ref:-v2.5.1}"; }
+ensure_images() { # build missing images with visible progress; a silent auto-build looks like a hang (RTKLIB compiles for minutes)
+  local -a need=()
+  docker image inspect "$(image_tag)" >/dev/null 2>&1 || need+=(ppk)
+  if [[ "${1:-}" == "estpos" ]]; then docker image inspect dji-ppk-estpos >/dev/null 2>&1 || need+=(ppk-estpos); fi
+  if (( ${#need[@]} )); then
+    echo "${Y}image(s) not built yet: ${need[*]}. Building now (first run compiles RTKLIB, several minutes) ...${N}" >&2
+    docker compose --profile cli build "${need[@]}" || die "image build failed"
+  fi
+}
 # -T: no pseudo-TTY, stdin from /dev/null: the containers must never swallow the keystrokes of the menu
-ppk() { compose run --rm -T ppk "$@" </dev/null; }
-estpos() { compose run --rm -T ppk-estpos "$@" </dev/null; }
+ppk() { ensure_images; compose run --rm -T --no-build ppk "$@" </dev/null; }
+estpos() { ensure_images estpos; compose run --rm -T --no-build ppk-estpos "$@" </dev/null; }
 
 need_env() {
   [[ -f .env ]] || die ".env is missing: cp .env.example .env and set FLIGHTS_DIR (and ESTPOS_USER / ESTPOS_PASSWORD for ordering)"
+  command -v docker >/dev/null || die "docker is not installed"
+  docker compose version >/dev/null 2>&1 || die "docker compose (v2 plugin) is not available"
+  command -v python3 >/dev/null || die "python3 is needed on the host for the menu"
 }
 need_creds() {
   grep -qE '^ESTPOS_USER=.+' .env && grep -qE '^ESTPOS_PASSWORD=.+' .env || die "ESTPOS_USER / ESTPOS_PASSWORD are not set in .env (needed to order a Virtual RINEX)"
@@ -34,7 +47,7 @@ cpath() { # folder name or host path -> path inside the containers
   echo "/data/flights/$(basename "$f")"
 }
 
-cmd_status() { ppk status /data/flights "$@"; }
+cmd_status() { need_env; ppk status /data/flights "$@"; }
 
 STATUS_JSON=""
 scan() { # one container run; the table and the menu list are both rendered from this JSON
