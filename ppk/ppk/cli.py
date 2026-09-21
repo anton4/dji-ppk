@@ -16,7 +16,7 @@ from .discover import Flight, load_flight
 from .estpos import check_base, format_order, plan_order
 from .events import write_obs_with_events
 from .mrk import parse_mrk
-from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_summary, solution_quality, format_quality, rtk_vs_ppk, format_rtk_vs_ppk
+from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_summary, solution_quality, format_quality, rtk_vs_ppk, format_rtk_vs_ppk, format_in_short
 from .pos import read_pos
 from .rinex import prepare_obs, read_header, scan_obs_span, find_base_candidates, find_nav_files, stale_nav_systems
 from .rtklib import rtklib_version, run_rnx2rtkp, write_conf
@@ -165,6 +165,8 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     rtk = rtk_vs_ppk(matched)
     summary["rtk_vs_ppk"] = rtk
     print(format_rtk_vs_ppk(rtk))
+    in_short = format_in_short(rtk, quality)
+    (out_dir / "accuracy.txt").write_text(in_short + "\n")
     if refs:
         ref = read_pos(refs[-1])
         cmp_res = compare_events(matched, ref.rows)
@@ -172,6 +174,7 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
         (out_dir / "compare_report.txt").write_text(report + "\n")
         summary["compare"] = {"reference": refs[-1].name, **cmp_res.as_dict()}
         print(report)
+    print(in_short)
     write_summary(out_dir / "summary.json", summary)
     if not keep_work:
         shutil.rmtree(work, ignore_errors=True)
@@ -248,7 +251,7 @@ def cmd_process(a: argparse.Namespace) -> int:
         out_dir = Path(a.out_dir) / a.name
     summary = process_flight(flight, base, out_dir, Path(a.conf), _parse_overrides(a.set), a.geo_accuracy,
                              a.fixed_only, a.keep_work, [Path(n) for n in (a.nav or [])])
-    print(f"\nResults in {out_dir}: events.csv, geo.txt ({summary['geo_txt_rows']} rows), summary.json")
+    print(f"\nResults in {out_dir}: geo.txt ({summary['geo_txt_rows']} rows), events.csv, summary.json, accuracy.txt")
     return 0
 
 

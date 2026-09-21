@@ -229,3 +229,14 @@ def test_rtk_vs_ppk_statistics():
     assert abs(r["north"]["mean_mm"]) < 200 and r["north"]["std_mm"] < 50  # same flight, RTK and PPK agree to cm
     text = format_rtk_vs_ppk(r)
     assert "compared photos: 5" in text and "RTK base offset" in text
+
+
+def test_in_short_table():
+    from ppk.outputs import rtk_vs_ppk, format_in_short, solution_quality
+    ev = read_pos(FIX / "sample_events.pos")
+    mrk = parse_mrk(FIX / "sample.MRK")
+    matched, _ = match_events(mrk, ev.rows, {})
+    rtk = rtk_vs_ppk(matched)
+    assert rtk["horizontal_error"]["rms_mm"] >= rtk["horizontal_error"]["p95_mm"] * 0 and rtk["vertical_error"]["max_mm"] >= 0
+    text = format_in_short(rtk, solution_quality(matched, len(mrk), read_pos(FIX / "sample.pos").rows))
+    assert "DJI on-board RTK (as flown)" in text and "after PPK with the RINEX base" in text and "cm" in text

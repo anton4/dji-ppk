@@ -212,7 +212,14 @@ def rtk_vs_ppk(matched: list[CameraEvent]) -> dict:
         return {"mean_mm": round(1000 * statistics.fmean(v), 1), "std_mm": round(1000 * statistics.pstdev(v), 1),
                 "min_mm": round(1000 * min(v), 1), "max_mm": round(1000 * max(v), 1)}
     mn, me, mu = statistics.fmean(dn), statistics.fmean(de), statistics.fmean(du)
+    horiz = sorted(math.hypot(a, b) for a, b in zip(dn, de))
+    vert = sorted(abs(u) for u in du)
+
+    def err(v):
+        return {"rms_mm": round(1000 * math.sqrt(statistics.fmean(x * x for x in v)), 1),
+                "p95_mm": round(1000 * v[min(len(v) - 1, int(0.95 * len(v)))], 1), "max_mm": round(1000 * v[-1], 1)}
     return {"n": len(rows), "mrk_q": _count_q(matched), "north": st(dn), "east": st(de), "up": st(du),
+            "horizontal_error": err(horiz), "vertical_error": err(vert),
             "offset_horizontal_mm": round(1000 * math.hypot(mn, me), 1), "offset_3d_mm": round(1000 * math.sqrt(mn * mn + me * me + mu * mu), 1),
             "scatter_horizontal_mm": round(1000 * math.hypot(statistics.pstdev(dn), statistics.pstdev(de)), 1)}
 
@@ -246,4 +253,32 @@ def format_rtk_vs_ppk(r: dict) -> str:
     lines.append(" typically off by decimetres). Horizontal scatter mostly reflects the drone's motion between the")
     lines.append(" on-board RTK epoch and the exposure instant, so it grows with flight speed; up scatter is the RTK noise.")
     lines.append("=" * 78)
+    return "\n".join(lines)
+
+
+def format_in_short(rtk: dict, quality: dict) -> str:
+    """One table a non-specialist can read: typical photo position error before and after PPK."""
+    sd = quality.get("std_mm", {})
+    ppk_h = sd.get("horizontal", {}).get("median")
+    ppk_v = sd.get("up", {}).get("median")
+    lines = ["=" * 78, " In short: how accurate are the photo positions of this flight?", "=" * 78,
+             f" {'':34}{'horizontal':<16}{'vertical':<16}",
+             "-" * 78]
+    if "horizontal_error" in rtk:
+        h, v = rtk["horizontal_error"], rtk["vertical_error"]
+        lines.append(f" {'DJI on-board RTK (as flown)':<34}{'about ' + f'{h['rms_mm'] / 10:.0f} cm':<16}"
+                     f"{'about ' + f'{v['rms_mm'] / 10:.0f} cm':<16}typical error (rms)")
+        lines.append(f" {'':34}{'worst ' + f'{h['max_mm'] / 10:.0f} cm':<16}"
+                     f"{'worst ' + f'{v['max_mm'] / 10:.0f} cm':<16}worst photo")
+    else:
+        lines.append(f" {'DJI on-board RTK (as flown)':<34}{'n/a':<16}{'n/a':<16}(no RTK fixed photos in the MRK)")
+    if ppk_h is not None and ppk_v is not None:
+        lines.append(f" {'after PPK with the RINEX base':<34}{'about ' + f'{ppk_h / 10:.1f} cm':<16}{'about ' + f'{ppk_v / 10:.1f} cm':<16}RTKLIB estimate, 1 sigma")
+    else:
+        lines.append(f" {'after PPK with the RINEX base':<34}{'n/a':<16}{'n/a':<16}(no fixed photos)")
+    lines += ["-" * 78,
+              " 'DJI on-board RTK' is the position the drone wrote into the photos during the flight, measured",
+              " against the PPK result. 'after PPK' is RTKLIB's own estimate and is not verified against ground",
+              " control points; independent checks typically show 1-3 cm.",
+              "=" * 78]
     return "\n".join(lines)
