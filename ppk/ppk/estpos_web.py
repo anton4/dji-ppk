@@ -417,6 +417,42 @@ def _error_screenshot(page, dest_dir: Path) -> None:
         pass
 
 
+def download_for_orders(orders: list[tuple[EstposOrder, str]], dest_dir: Path, user: str, password: str, *,
+                        timeout_min: float = 0, headed: bool = False) -> list[Path]:
+    """Download-only: for each planned order find the matching entry on the portal (same project name, start and
+    length) and download it. Never places an order. Raises FileNotFoundError when nothing matches."""
+    pw, browser, context = _browser(headed)
+    page = None
+    try:
+        page = context.new_page()
+        login(page, user, password)
+        entries = list_results(page)
+        paths = []
+        missing = []
+        for order, project in orders:
+            short = project[:30]
+            entry = find_existing(entries, short, order)
+            if entry is None:
+                missing.append(f"{short} ({order.start_local:%Y-%m-%d %H:%M} local, {order.duration.total_seconds() / 3600:.2f} h)")
+                continue
+            if not entry.ready:
+                if timeout_min <= 0:
+                    raise RuntimeError(f"order {short!r} is still processing on the portal; retry later or use --timeout")
+                entry = wait_for_result(page, short, None, timeout_min)
+            paths.append(download_entry(page, entry, dest_dir))
+        if missing:
+            raise FileNotFoundError("no order on the portal matches: " + "; ".join(missing)
+                                    + ". Results are kept 14 days; run estpos-order to order it.")
+        return paths
+    except Exception:
+        _error_screenshot(page, dest_dir)
+        raise
+    finally:
+        context.close()
+        browser.close()
+        pw.stop()
+
+
 def download_existing(project: str, dest_dir: Path, user: str, password: str, *, since: datetime | None = None,
                       timeout_min: float = 0, headed: bool = False) -> Path:
     pw, browser, context = _browser(headed)

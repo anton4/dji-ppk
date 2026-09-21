@@ -351,15 +351,31 @@ def cmd_estpos_download(a: argparse.Namespace) -> int:
         from . import estpos_web
     except ImportError as exc:
         raise SystemExit(f"playwright is not installed ({exc}); use the ppk-estpos compose service")
-    flight = load_flights(_flight_path(a.flight))[0]
-    project = a.project or flight.name
+    flights = load_flights(_flight_path(a.flight))
+    flight = flights[0]
     user, pw = _estpos_credentials()
+    if not a.force:
+        have = resolve_bases(flights, None, DEFAULT_BASE_DIR)
+        if all(have):
+            print(f"{flight.name}: base file {', '.join(sorted({b.name for b in have}))} already covers every session; nothing to download.")
+            return 0
     try:
-        path = estpos_web.download_existing(project, flight.directory, user, pw, timeout_min=a.timeout, headed=a.headed)
+        if a.project:
+            paths = [estpos_web.download_existing(a.project, flight.directory, user, pw, timeout_min=a.timeout, headed=a.headed)]
+        else:
+            # same planning as estpos-order, so the project names and spans match what was ordered before
+            orders = plan_orders(flights, a.buffer, None, a.max_hours)
+            base_project = flight.name if len(orders) == 1 else flight.name[:28]
+            projects = [base_project] if len(orders) == 1 else [f"{base_project}-{i}" for i in range(1, len(orders) + 1)]
+            paths = estpos_web.download_for_orders([(o, p) for (o, _f), p in zip(orders, projects)], flight.directory, user, pw,
+                                                   timeout_min=a.timeout, headed=a.headed)
     except Exception as exc:  # noqa: BLE001
         log.error("%s", exc)
         return 1
-    return _report_downloaded_base(path, flight)
+    rc = 0
+    for path in paths:
+        rc = max(rc, _report_downloaded_base(path, flight, flights))
+    return rc
 
 
 def _report_downloaded_base(path: Path, flight: Flight, flights: list[Flight] | None = None) -> int:
@@ -497,10 +513,13 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--headed", action="store_true", help="show the browser (host only)")
     s.set_defaults(func=cmd_estpos_order)
 
-    s = sub.add_parser("estpos-download", help="download a finished Virtual RINEX order (by project name) into the flight folder")
+    s = sub.add_parser("estpos-download", help="download an already ordered Virtual RINEX into the flight folder; never orders")
     s.add_argument("flight", help="flight folder (or .OBS file)")
-    s.add_argument("--project", help="project name used when ordering (default: flight folder name)")
+    s.add_argument("--project", help="project name used when ordering (default: match by the flight's own span and folder name)")
+    s.add_argument("--buffer", type=int, default=5)
+    s.add_argument("--max-hours", type=float, default=6.0)
     s.add_argument("--timeout", type=float, default=0, help="minutes to keep polling if it is still processing (default: no wait)")
+    s.add_argument("--force", action="store_true", help="download even if a base file in the folder already covers every session")
     s.add_argument("--headed", action="store_true")
     s.set_defaults(func=cmd_estpos_download)
 
