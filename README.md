@@ -81,15 +81,17 @@ DJI_202609181702_037_site-b         1/1225       2026-09-18 17:19 - 17:38 EEST  
 ```
 
 Move with the arrow keys, tick folders with Space (folders with something to do are pre-ticked; `a` all pending,
-`A` all, `n` none), then Enter opens the action list for the ticked folders; a letter preselects an entry and
-Enter starts it, Esc goes back: **r** run (order the Virtual RINEX if no base file covers the sessions yet, then
-process), **d** download an existing order only, **o** order only, **p** process only, **w** show the order parameters.
-**W** starts the watcher, **s** rescans, **q** quits. With nothing ticked an action applies to the highlighted folder.
+`A` all, `n` none). The action bar at the bottom always shows the selected action, **run** by default: ←→ or a
+letter changes it (**r** run = order the Virtual RINEX if no base file covers the sessions yet, then process;
+**d** download an existing order only; **o** order only; **p** process only; **w** show the order parameters), Enter
+asks for confirmation and a second Enter starts it for the ticked folders. So the end-to-end path is: tick, Enter,
+Enter. **W** starts the watcher, **s** rescans, **q** quits. With nothing ticked an action applies to the highlighted folder.
 Without a terminal (pipes, Windows) a typed menu with the same keys is used. Non-interactive forms:
 
 ```sh
 ./dji-ppk status                 # the table above (add --json for scripts)
 ./dji-ppk run <folder>           # order if needed + process -> geo.txt, events.csv, summary.json, accuracy.txt in the folder
+./dji-ppk <folder>               # same: run is the default
 ./dji-ppk run --all              # every folder whose next step is not "done"
 ./dji-ppk download <folder>      # fetch an order that already exists on the portal (matched by the flight's span), never orders
 ./dji-ppk order|process|window|dry-run <folder>

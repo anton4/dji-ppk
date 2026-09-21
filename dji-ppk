@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """dji-ppk: one entry point for the whole flow. Runs on the host and drives the two containers.
 
-  ./dji-ppk                     interactive menu: arrow keys to move, Space to tick, Enter to pick an action
+  ./dji-ppk                     interactive menu: ↑↓ move, Space tick, ←→ choose the action (run is preselected), Enter, Enter starts
   ./dji-ppk status              one line per flight folder: sessions, photos, base, result, next step (--json)
-  ./dji-ppk run <folder>...     order the Virtual RINEX if needed, then process (geo.txt & co in the folder)
+  ./dji-ppk run <folder>...     order the Virtual RINEX if needed, then process (geo.txt & co in the folder);
+                                the default: ./dji-ppk <folder> does the same
   ./dji-ppk run --all           the same for every folder whose next step is order / process / reprocess
   ./dji-ppk order <folder>      order + download the base only         ./dji-ppk download <folder>  download an existing order (never orders)
   ./dji-ppk process <folder>    process only                           ./dji-ppk window <folder>    print the order parameters
@@ -419,30 +420,36 @@ def _table_lines(rows: list[dict], ticked: list[bool], cursor: int, width: int) 
     return lines
 
 
-def _draw(rows, ticked, cursor, msg: str, popup: int | None) -> None:
+def _draw(rows, ticked, cursor, msg: str, action: int, confirm: bool) -> None:
     width = _term_width()
+    n = sum(ticked)
     sys.stdout.write("\033[2J\033[H")
-    print(c("dji-ppk", "bold", "magenta") + "  " + c("Flight folders under FLIGHTS_DIR", "bold"))
+    print(c("dji-ppk", "bold", "magenta") + "  " + c("Flight folders under FLIGHTS_DIR", "bold")
+          + c(f"   ({n} of {len(rows)} ticked)", "dim"))
     print()
     if not rows:
         print("no flight folders (OBS/NAV/MRK triplets) found under FLIGHTS_DIR")
     else:
         print("\n".join(_table_lines(rows, ticked, cursor, width)))
     print()
-    if popup is not None:
-        n = sum(ticked) or 1
-        print(c(f"Action for {n} folder{'s' if n > 1 else ''}:", "bold") + "  ↑↓ or letter to choose, "
-              + c("Enter", "bold") + " to start, " + c("Esc", "bold") + " to go back")
-        for i, (key, label) in enumerate(ACTIONS):
-            marker = c("› ", "bold", "cyan") if i == popup else "  "
-            text = f"{key}  {label}"
-            print(marker + (("\033[7m" + text + "\033[0m") if (i == popup and COLOR) else text))
+    # the action bar: always visible, the selected action highlighted
+    parts = []
+    for i, (key, label) in enumerate(ACTIONS):
+        short = label.split(":")[0].split(" (")[0]
+        text = f" {key}  {short} "
+        parts.append(("\033[7m" + text + "\033[0m") if (i == action and COLOR) else (f"[{text}]" if i == action else text))
+    print(c("Action:", "bold") + "  " + "   ".join(parts))
+    print(c("         " + ACTIONS[action][1], "dim"))
+    print()
+    if confirm:
+        target = f"{n} ticked folder{'s' if n != 1 else ''}" if n else f"the highlighted folder ({rows[cursor]['folder']})"
+        print(c(f"Start '{ACTIONS[action][1].split(':')[0]}' for {target}?  ", "bold", "yellow") + c("Enter", "bold") + " = yes   "
+              + c("Esc", "bold") + " = no")
     else:
-        print(c("↑↓", "bold") + " move   " + c("Space", "bold") + " tick   " + c("Enter", "bold") + " choose an action for the ticked folders   "
-              + c("a", "bold") + " all pending   " + c("A", "bold") + " all   " + c("n", "bold") + " none")
-        print(c("r", "bold") + " run   " + c("d", "bold") + " download   " + c("o", "bold") + " order   " + c("p", "bold")
-              + " process   " + c("w", "bold") + " order parameters  (a letter preselects, Enter starts)   " + c("s", "bold")
-              + " rescan   " + c("W", "bold") + " watcher   " + c("q", "bold") + " quit")
+        print(c("↑↓", "bold") + " move   " + c("Space", "bold") + " tick   " + c("←→", "bold") + " or letter: choose the action   "
+              + c("Enter", "bold") + " start it for the ticked folders   " + c("a", "bold") + " all pending   " + c("A", "bold")
+              + " all   " + c("n", "bold") + " none")
+        print(c("s", "bold") + " rescan   " + c("W", "bold") + " watcher   " + c("q", "bold") + " quit")
         print(c(legend(), "dim") if not COLOR else legend())
     if msg:
         print()
@@ -460,7 +467,8 @@ def menu(env: dict[str, str]) -> None:
         return menu_text(env)
     rows = status_rows(env)
     ticked = [r["next"] in PENDING for r in rows]
-    cursor, popup, msg = 0, None, ""
+    cursor, action, confirm, msg = 0, 0, False, ""
+    letters = [a[0] for a in ACTIONS]
 
     def rescan():
         nonlocal rows, ticked, cursor
@@ -475,7 +483,7 @@ def menu(env: dict[str, str]) -> None:
             banner(f)
             rc = ACTION_FN[key](env, f)
             if rc == 3 and key == "d":
-                print(c(f"○ {f}: not ordered yet, press r (run) or o (order) to order it", "yellow"))
+                print(c(f"○ {f}: not ordered yet, use 'run' or 'order' to order it", "yellow"))
             elif rc != 0:
                 print(c(f"✘ {f} failed", "red", "bold"))
         try:
@@ -486,30 +494,34 @@ def menu(env: dict[str, str]) -> None:
             rescan()
 
     while True:
-        _draw(rows, ticked, cursor, msg, popup)
+        _draw(rows, ticked, cursor, msg, action, confirm)
         msg = ""
         k = read_key()
-        if popup is not None:
-            if k == "UP":
-                popup = (popup - 1) % len(ACTIONS)
-            elif k == "DOWN":
-                popup = (popup + 1) % len(ACTIONS)
-            elif k == "ENTER":
-                key, popup = ACTIONS[popup][0], None
-                run_action(key)
-            elif k in ("ESC", "q"):
-                popup = None
-            elif k in ACTION_FN:
-                popup = [a[0] for a in ACTIONS].index(k)  # a letter only moves the highlight; Enter starts
+        if confirm:
+            if k == "ENTER":
+                confirm = False
+                run_action(letters[action])
+            elif k in ("ESC", "q", "n", "N"):
+                confirm = False
             continue
         if k in ("q", "ESC"):
             sys.stdout.write("\033[2J\033[H")
             return
-        if not rows:
-            if k == "s":
-                rescan()
+        if k == "s":
+            rescan()
+        elif k == "W":
+            sys.stdout.write("\033[2J\033[H")
+            act_watch(env)
+            rescan()
+        elif k == "LEFT":
+            action = (action - 1) % len(ACTIONS)
+        elif k == "RIGHT":
+            action = (action + 1) % len(ACTIONS)
+        elif k in letters:
+            action = letters.index(k)
+        elif not rows:
             continue
-        if k == "UP":
+        elif k == "UP":
             cursor = (cursor - 1) % len(rows)
         elif k == "DOWN":
             cursor = (cursor + 1) % len(rows)
@@ -521,16 +533,8 @@ def menu(env: dict[str, str]) -> None:
             ticked = [True] * len(rows)
         elif k in ("n", "N"):
             ticked = [False] * len(rows)
-        elif k == "s":
-            rescan()
-        elif k == "W":
-            sys.stdout.write("\033[2J\033[H")
-            act_watch(env)
-            rescan()
         elif k == "ENTER":
-            popup = 0
-        elif k in ACTION_FN:
-            popup = [a[0] for a in ACTIONS].index(k)  # preselect in the action list; nothing starts until Enter
+            confirm = True
         elif k.isdigit():
             i = int(k) - 1
             if 0 <= i < len(rows):
@@ -555,6 +559,9 @@ def main(argv: list[str]) -> int:
         s.add_argument("extra", nargs=argparse.REMAINDER)
     sub.add_parser("watch")
     sub.add_parser("build")
+    known = {"status", "run", "order", "download", "process", "window", "dry-run", "watch", "build", "-h", "--help"}
+    if argv and argv[0] not in known and not argv[0].startswith("-"):
+        argv = ["run", *argv]  # ./dji-ppk <folder> ... = run: the default is to do everything
     a = ap.parse_args(argv)
 
     if a.cmd is None:
