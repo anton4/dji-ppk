@@ -459,3 +459,9 @@ def test_project_names_per_order():
     assert [n[0][-2:] for n in two] == ["-1", "-2"] and two[1][1] == long[:28] + "-2"
     assert _project_names("DJI_x", 1, None) == [["DJI_x"]]
     assert _project_names("DJI_x", 1, "custom") == [["custom"]]
+
+
+def test_portal_error_detection():
+    from ppk.estpos_web import portal_error
+    assert portal_error("X-posiga ei saanud ühendust, palun proovige uuesti värskendades lehte.(Unsuccessful HTTP response (XPOS_HTTP_404))")
+    assert portal_error("Tulemused\nRINEX andmed\nLae alla") is None

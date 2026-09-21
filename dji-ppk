@@ -212,10 +212,19 @@ def act_process(env, folder, *extra):
     return run_in("ppk", env, "process", cpath(folder), *extra).returncode
 
 
+PORTAL_DOWN = 4  # exit code of estpos-order / estpos-download when the ESTPOS backend is unavailable
+
+
 def act_run(env: dict[str, str], folder: str) -> int:
     print(c(f"== {folder}: base file", "bold"))
     if has_creds(env):
-        if run_in("ppk-estpos", env, "estpos-order", cpath(folder)).returncode != 0:
+        rc = run_in("ppk-estpos", env, "estpos-order", cpath(folder)).returncode
+        if rc == PORTAL_DOWN:
+            return PORTAL_DOWN
+        if rc == 3:
+            print(c(f"○ {folder}: the order is placed but not ready yet; run again later to download and process it", "yellow"))
+            return 3
+        if rc != 0:
             print(c(f"✘ ordering the Virtual RINEX failed for {folder}", "red", "bold"), file=sys.stderr)
             return 1
     else:
@@ -235,9 +244,14 @@ def act_run_all(env: dict[str, str], rows: list[dict] | None = None) -> int:
         print(c(f"nothing to do: every folder is done, waiting for photos, expired, or has fewer than {MIN_PHOTOS} photos", "green"))
         return 0
     rc = 0
-    for f in pending:
+    for i, f in enumerate(pending):
         banner(f)
-        rc = max(rc, act_run(env, f))
+        r = act_run(env, f)
+        if r == PORTAL_DOWN:
+            print(c(f"\n✘ the ESTPOS portal backend is down; stopping here ({len(pending) - i - 1} folders not started). "
+                    "Orders already placed are reused when you run again later.", "red", "bold"))
+            return PORTAL_DOWN
+        rc = max(rc, r)
     return rc
 
 
@@ -514,16 +528,29 @@ def menu(env: dict[str, str]) -> None:
                 msg = "nothing ticked: move to a folder and press Space, then Enter"
                 continue
             sys.stdout.write("\033[2J\033[H")
-            failed = []
+            failed, waiting, stopped = [], [], False
             for i, f in enumerate(folders, 1):
                 print(c(f"\n==== [{i}/{len(folders)}] {f} ====", "bold", "magenta"))
-                if act_run(env, f) != 0:
+                rc = act_run(env, f)
+                if rc == PORTAL_DOWN:
+                    print(c(f"\n✘ the ESTPOS portal backend is down (X-pos not reachable). Stopping here; "
+                            f"{len(folders) - i} folder{'s' if len(folders) - i != 1 else ''} not started. "
+                            "Try again later: orders already placed are reused, nothing is ordered twice.", "red", "bold"))
+                    stopped = True
+                    break
+                if rc == 3:
+                    waiting.append(f)
+                elif rc != 0:
                     failed.append(f)
             print()
-            if failed:
-                print(c(f"✘ {len(failed)} of {len(folders)} folders failed: " + ", ".join(failed), "red", "bold"))
-            else:
-                print(c(f"✔ all {len(folders)} folders finished", "green", "bold"))
+            if not stopped:
+                if failed:
+                    print(c(f"✘ {len(failed)} of {len(folders)} folders failed: " + ", ".join(failed), "red", "bold"))
+                if waiting:
+                    print(c(f"○ {len(waiting)} order{'s' if len(waiting) != 1 else ''} placed but not ready yet: " + ", ".join(waiting)
+                            + ". Press START again later.", "yellow"))
+                if not failed and not waiting:
+                    print(c(f"✔ all {len(folders)} folders finished", "green", "bold"))
             try:
                 input(c("\nPress Enter to return to the table ...", "dim"))
             except (EOFError, KeyboardInterrupt):

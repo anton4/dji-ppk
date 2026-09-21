@@ -348,6 +348,12 @@ def cmd_estpos_order(a: argparse.Namespace) -> int:
         paths = estpos_web.order_and_download_many([(o, p) for (o, _f), p in zip(orders, projects)], dest, user, pw,
                                                    rate_s=a.rate, height=height, wait=not a.no_wait, timeout_min=a.timeout,
                                                    headed=a.headed, dry_run=a.dry_run, screenshot=shot)
+    except estpos_web.PortalUnavailable as exc:
+        log.error("%s", exc)
+        return 4  # distinct code: the portal is down, retry later
+    except TimeoutError as exc:
+        log.warning("%s", exc)
+        return 3
     except Exception as exc:  # noqa: BLE001
         log.error("%s", exc)
         return 1
@@ -383,6 +389,9 @@ def cmd_estpos_download(a: argparse.Namespace) -> int:
     except estpos_web.NotOrdered as exc:
         log.warning("%s", exc)
         return 3  # distinct code: nothing failed, there is just nothing to download yet
+    except estpos_web.PortalUnavailable as exc:
+        log.error("%s", exc)
+        return 4
     except Exception as exc:  # noqa: BLE001
         log.error("%s", exc)
         return 1
@@ -531,7 +540,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--rate", type=int, default=1, choices=(1, 5, 10, 15, 20, 30, 60), help="observation rate in seconds")
     s.add_argument("--max-hours", type=float, default=6.0, help="max length of one Virtual RINEX order; a longer flight day is split into several orders at the gaps between sessions (each order only spans its sessions plus the buffer)")
     s.add_argument("--no-wait", action="store_true", help="submit only; download later with estpos-download")
-    s.add_argument("--timeout", type=float, default=60, help="minutes to wait for the portal to prepare the file")
+    s.add_argument("--timeout", type=float, default=15, help="minutes to wait for the portal to prepare the file (normally under 2); "
+                   "afterwards the order stays on the portal and a later run downloads it")
     s.add_argument("--dry-run", action="store_true", help="fill and verify the form, save a screenshot, do not submit")
     s.add_argument("--force", action="store_true", help="order even if a base file in the folder already covers every session")
     s.add_argument("--screenshot", action="store_true", help="save estpos_order_form.png next to the flight before submitting")
