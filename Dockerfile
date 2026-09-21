@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# PPK processor: RTKLIB-EX (rtklibexplorer, successor of the demo5 branch) + Python tooling
+# PPK processor: RTKLIB-EX (rtklibexplorer/RTKLIB) + Python tooling
 # for DJI Matrice 4E flights against ESTPOS (Leica Spider) base RINEX files.
 
 ARG RTKLIB_REF=v2.5.1
@@ -12,8 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 
-# RTKLIB-EX (https://github.com/rtklibexplorer/RTKLIB). RTKLIB_REF may be a tag (v2.5.1, b34L)
-# or a branch (main, demo5).
+# RTKLIB-EX (https://github.com/rtklibexplorer/RTKLIB). RTKLIB_REF may be a tag (v2.5.1) or a branch (main).
 RUN git clone --depth 1 --branch "${RTKLIB_REF}" https://github.com/rtklibexplorer/RTKLIB.git rtklib \
     && git -C rtklib log -1 --format='%H %cd %s' > /src/rtklib_commit.txt
 # Number of carrier frequency slots compiled into RTKLIB (upstream default 3 = L1+L2+L5). 4 adds the

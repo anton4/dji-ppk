@@ -3,10 +3,13 @@
 Docker Compose service that post-processes DJI RTK drone flights (tested with a Matrice 4E) against
 ESTPOS base station data and produces camera positions for photogrammetry (WebODM `geo.txt`).
 
-Engine: **RTKLIB-EX** from [rtklibexplorer/RTKLIB](https://github.com/rtklibexplorer/RTKLIB), tag `v2.5.1`.
-This is the continuation of the well known `demo5` branch, which was retired on 2025-07-26 (last tag `b34L`);
-all development by the same author now happens on `main`. The tag is a build argument (`RTKLIB_REF`), so
-`demo5`/`b34L` can still be built for comparison. RTKLIB is compiled with four carrier frequency slots
+ESTPOS is the Estonian national GNSS reference station network run by the Land Board (Maa-amet); its portal
+delivers Virtual RINEX files, base station observations computed for any point you choose, which this tool uses
+as the base for post-processed kinematic (PPK) correction of the drone's positions, replacing an on-site base or
+a real-time RTK link.
+
+Engine: **RTKLIB-EX** from [rtklibexplorer/RTKLIB](https://github.com/rtklibexplorer/RTKLIB), tag `v2.5.1`,
+selectable with the `RTKLIB_REF` build argument. RTKLIB is compiled with four carrier frequency slots
 (`RTKLIB_NFREQ=4`, upstream default 3) so `pos1-frequency=l1+l2+l5+l6` is accepted; the default configuration
 still uses three, because the fourth slot made both test flights worse (table below).
 
@@ -217,7 +220,7 @@ Emlid Studio (verified to ~1 mm). Image names are the real `DJI_..._NNNN_V.JPG` 
 ```sh
 cd ppk && PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest tests      # host
 docker compose --profile cli run --rm --entrypoint pytest ppk /app/ppk/tests   # in the image
-docker compose --profile cli build --build-arg RTKLIB_REF=b34L ppk       # alternative engine version
+docker compose --profile cli build --build-arg RTKLIB_REF=main ppk       # another RTKLIB-EX tag or branch
 ```
 
 The test fixtures are excerpts of real DJI and ESTPOS files. Their coordinates are shifted by a few hundred metres
