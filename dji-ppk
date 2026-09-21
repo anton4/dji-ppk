@@ -18,7 +18,7 @@ cd "$(dirname "$0")"
 if [[ -t 1 ]]; then B=$'\e[1m'; D=$'\e[2m'; G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; N=$'\e[0m'; else B=""; D=""; G=""; Y=""; R=""; N=""; fi
 
 die() { echo "${R}error:${N} $*" >&2; exit 1; }
-compose() { docker compose --progress quiet --profile cli "$@"; }
+compose() { docker compose --profile cli "$@"; }
 image_tag() { local ref; ref="$(grep -E '^RTKLIB_REF=' .env 2>/dev/null | cut -d= -f2)"; echo "dji-ppk:${ref:-v2.5.1}"; }
 ensure_images() { # build missing images with visible progress; a silent auto-build looks like a hang (RTKLIB compiles for minutes)
   local -a need=()
