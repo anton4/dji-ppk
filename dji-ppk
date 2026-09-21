@@ -431,17 +431,18 @@ def _draw(rows, ticked, cursor, msg: str, popup: int | None) -> None:
     print()
     if popup is not None:
         n = sum(ticked) or 1
-        print(c(f"Action for {n} folder{'s' if n > 1 else ''} (↑↓ Enter, Esc = back):", "bold"))
+        print(c(f"Action for {n} folder{'s' if n > 1 else ''}:", "bold") + "  ↑↓ or letter to choose, "
+              + c("Enter", "bold") + " to start, " + c("Esc", "bold") + " to go back")
         for i, (key, label) in enumerate(ACTIONS):
             marker = c("› ", "bold", "cyan") if i == popup else "  "
             text = f"{key}  {label}"
             print(marker + (("\033[7m" + text + "\033[0m") if (i == popup and COLOR) else text))
     else:
-        print(c("↑↓", "bold") + " move   " + c("Space", "bold") + " tick   " + c("Enter", "bold") + " action for ticked   "
+        print(c("↑↓", "bold") + " move   " + c("Space", "bold") + " tick   " + c("Enter", "bold") + " choose an action for the ticked folders   "
               + c("a", "bold") + " all pending   " + c("A", "bold") + " all   " + c("n", "bold") + " none")
         print(c("r", "bold") + " run   " + c("d", "bold") + " download   " + c("o", "bold") + " order   " + c("p", "bold")
-              + " process   " + c("w", "bold") + " order parameters   " + c("s", "bold") + " rescan   " + c("W", "bold")
-              + " watcher   " + c("q", "bold") + " quit")
+              + " process   " + c("w", "bold") + " order parameters  (a letter preselects, Enter starts)   " + c("s", "bold")
+              + " rescan   " + c("W", "bold") + " watcher   " + c("q", "bold") + " quit")
         print(c(legend(), "dim") if not COLOR else legend())
     if msg:
         print()
@@ -499,8 +500,7 @@ def menu(env: dict[str, str]) -> None:
             elif k in ("ESC", "q"):
                 popup = None
             elif k in ACTION_FN:
-                popup = None
-                run_action(k)
+                popup = [a[0] for a in ACTIONS].index(k)  # a letter only moves the highlight; Enter starts
             continue
         if k in ("q", "ESC"):
             sys.stdout.write("\033[2J\033[H")
@@ -530,7 +530,7 @@ def menu(env: dict[str, str]) -> None:
         elif k == "ENTER":
             popup = 0
         elif k in ACTION_FN:
-            run_action(k)
+            popup = [a[0] for a in ACTIONS].index(k)  # preselect in the action list; nothing starts until Enter
         elif k.isdigit():
             i = int(k) - 1
             if 0 <= i < len(rows):

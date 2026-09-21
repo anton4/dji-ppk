@@ -81,11 +81,11 @@ DJI_202609181702_037_site-b         1/1225       2026-09-18 17:19 - 17:38 EEST  
 ```
 
 Move with the arrow keys, tick folders with Space (folders with something to do are pre-ticked; `a` all pending,
-`A` all, `n` none), then Enter opens the action list for the ticked folders, or press the action key directly:
-**r** run (order the Virtual RINEX if no base file covers the sessions yet, then process), **d** download an existing
-order only, **o** order only, **p** process only, **w** show the order parameters, **W** start the watcher, **s** rescan,
-**q** quit. With nothing ticked an action applies to the highlighted folder. Without a terminal (pipes, Windows) a
-typed menu with the same keys is used. Non-interactive forms:
+`A` all, `n` none), then Enter opens the action list for the ticked folders; a letter preselects an entry and
+Enter starts it, Esc goes back: **r** run (order the Virtual RINEX if no base file covers the sessions yet, then
+process), **d** download an existing order only, **o** order only, **p** process only, **w** show the order parameters.
+**W** starts the watcher, **s** rescans, **q** quits. With nothing ticked an action applies to the highlighted folder.
+Without a terminal (pipes, Windows) a typed menu with the same keys is used. Non-interactive forms:
 
 ```sh
 ./dji-ppk status                 # the table above (add --json for scripts)
