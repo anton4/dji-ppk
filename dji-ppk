@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# dji-ppk: one entry point for the whole flow. Runs on the host, drives the two containers.
+#
+#   ./dji-ppk                     interactive menu (status table, pick a folder, pick an action)
+#   ./dji-ppk status              one line per flight folder: sessions, photos, base, result, next step
+#   ./dji-ppk run <folder>        order the Virtual RINEX if needed, then process (geo.txt & co)
+#   ./dji-ppk run --all           the same for every folder that is not done yet
+#   ./dji-ppk order <folder>      order + download only            ./dji-ppk process <folder>   process only
+#   ./dji-ppk window <folder>     print the order parameters       ./dji-ppk dry-run <folder>   fill the form, do not submit
+#   ./dji-ppk watch               start the folder watcher and follow its log
+#   ./dji-ppk build               (re)build both images
+#
+# <folder> is a folder name under FLIGHTS_DIR (see .env), or any path to it.
+set -euo pipefail
+cd "$(dirname "$0")"
+
+if [[ -t 1 ]]; then B=$'\e[1m'; D=$'\e[2m'; G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; N=$'\e[0m'; else B=""; D=""; G=""; Y=""; R=""; N=""; fi
+
+die() { echo "${R}error:${N} $*" >&2; exit 1; }
+compose() { docker compose --progress quiet --profile cli "$@"; }
+# -T: no pseudo-TTY, stdin from /dev/null: the containers must never swallow the keystrokes of the menu
+ppk() { compose run --rm -T ppk "$@" </dev/null; }
+estpos() { compose run --rm -T ppk-estpos "$@" </dev/null; }
+
+need_env() {
+  [[ -f .env ]] || die ".env is missing: cp .env.example .env and set FLIGHTS_DIR (and ESTPOS_USER / ESTPOS_PASSWORD for ordering)"
+}
+need_creds() {
+  grep -qE '^ESTPOS_USER=.+' .env && grep -qE '^ESTPOS_PASSWORD=.+' .env || die "ESTPOS_USER / ESTPOS_PASSWORD are not set in .env (needed to order a Virtual RINEX)"
+}
+cpath() { # folder name or host path -> path inside the containers
+  local f="${1%/}"
+  echo "/data/flights/$(basename "$f")"
+}
+
+cmd_status() { ppk status /data/flights "$@"; }
+
+pending_folders() { # names of folders whose next step is not "done"
+  ppk status /data/flights --json 2>/dev/null | python3 -c '
+import json, sys
+for r in json.load(sys.stdin):
+    if r["next"] != "done":
+        print(r["folder"])'
+}
+all_folders() {
+  ppk status /data/flights --json 2>/dev/null | python3 -c '
+import json, sys
+for r in json.load(sys.stdin):
+    print(r["folder"] + "\t" + r["next"])'
+}
+
+cmd_order()   { need_env; need_creds; estpos estpos-order "$(cpath "$1")" "${@:2}"; }
+cmd_dryrun()  { need_env; need_creds; estpos estpos-order "$(cpath "$1")" --dry-run "${@:2}"; }
+cmd_window()  { need_env; ppk estpos-window "$(cpath "$1")" "${@:2}"; }
+cmd_process() { need_env; ppk process "$(cpath "$1")" "${@:2}"; }
+
+cmd_run() {
+  need_env
+  local f="$1"
+  echo "${B}== $f: base file${N}"
+  if grep -qE '^ESTPOS_USER=.+' .env; then
+    estpos estpos-order "$(cpath "$f")" || die "ordering the Virtual RINEX failed for $f"
+  else
+    echo "${Y}ESTPOS credentials not set in .env: skipping the order step, using whatever base file is in the folder${N}"
+  fi
+  echo "${B}== $f: processing${N}"
+  ppk process "$(cpath "$f")" || die "processing failed for $f"
+}
+
+cmd_run_all() {
+  local list; list="$(pending_folders)"
+  [[ -n "$list" ]] || { echo "${G}nothing to do: every folder is done${N}"; return 0; }
+  while IFS= read -r f; do cmd_run "$f"; done <<< "$list"
+}
+
+cmd_watch() { need_env; docker compose up -d ppk-watch && docker compose logs -f ppk-watch; }
+cmd_build() { compose build ppk ppk-estpos; }
+
+menu() {
+  need_env
+  while true; do
+    echo; echo "${B}Flight folders under FLIGHTS_DIR${N}"
+    cmd_status || die "cannot list flights (is the image built? ./dji-ppk build)"
+    echo
+    local -a names nexts
+    names=(); nexts=()
+    while IFS=$'\t' read -r n x; do [[ -n "$n" ]] && { names+=("$n"); nexts+=("$x"); }; done < <(all_folders)
+    local -a items
+    items=()
+    for i in "${!names[@]}"; do items+=("${names[$i]}  ${D}(next: ${nexts[$i]})${N}"); done
+    items+=("run everything that is not done" "start the watcher" "quit")
+    PS3="${B}Pick a folder or an action: ${N}"
+    local choice
+    select choice in "${items[@]}"; do
+      case "$REPLY" in
+        "$(( ${#names[@]} + 1 ))") cmd_run_all; break ;;
+        "$(( ${#names[@]} + 2 ))") cmd_watch; break ;;
+        "$(( ${#names[@]} + 3 ))") exit 0 ;;
+        *)
+          if [[ "$REPLY" =~ ^[0-9]+$ ]] && (( REPLY >= 1 && REPLY <= ${#names[@]} )); then
+            folder_menu "${names[$((REPLY - 1))]}"; break
+          fi
+          echo "invalid choice" ;;
+      esac
+    done
+  done
+}
+
+folder_menu() {
+  local f="$1"
+  echo; echo "${B}$f${N}"
+  PS3="${B}What to do with $f: ${N}"
+  local act
+  select act in "run: order the base if needed, then process" "order the base only" "process only" \
+                "show the order parameters" "dry-run the order (fill the form, do not submit)" "back"; do
+    case "$REPLY" in
+      1) cmd_run "$f"; break ;;
+      2) cmd_order "$f"; break ;;
+      3) cmd_process "$f"; break ;;
+      4) cmd_window "$f"; break ;;
+      5) cmd_dryrun "$f"; break ;;
+      6) break ;;
+      *) echo "invalid choice" ;;
+    esac
+  done
+}
+
+case "${1:-}" in
+  "")            menu ;;
+  status)        shift; cmd_status "$@" ;;
+  run)           shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk run <folder> | --all"
+                 if [[ "$1" == "--all" ]]; then cmd_run_all; else cmd_run "$1"; fi ;;
+  order)         shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk order <folder>"; cmd_order "$@" ;;
+  process)       shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk process <folder>"; cmd_process "$@" ;;
+  window)        shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk window <folder>"; cmd_window "$@" ;;
+  dry-run)       shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk dry-run <folder>"; cmd_dryrun "$@" ;;
+  watch)         cmd_watch ;;
+  build)         cmd_build ;;
+  -h|--help|help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)             die "unknown command '$1' (try ./dji-ppk --help)" ;;
+esac
