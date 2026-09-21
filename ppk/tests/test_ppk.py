@@ -166,6 +166,6 @@ def test_flight_path_fallback(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "DEFAULT_FLIGHTS_DIR", str(tmp_path))
     assert cli._flight_path(str(tmp_path / "DJI_x")) == tmp_path / "DJI_x"
     assert cli._flight_path("../DJI_x") == tmp_path / "DJI_x"
-    assert cli._flight_path("/Users/someone/DJI_x") == tmp_path / "DJI_x"
+    assert cli._flight_path("/somewhere/else/DJI_x") == tmp_path / "DJI_x"
     with pytest.raises(FileNotFoundError):
         cli._flight_path("DJI_missing")
