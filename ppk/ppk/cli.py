@@ -17,7 +17,7 @@ from .events import write_obs_with_events
 from .mrk import parse_mrk
 from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_summary
 from .pos import read_pos
-from .rinex import prepare_obs, read_header, scan_obs_span, find_base_candidates
+from .rinex import prepare_obs, read_header, scan_obs_span, find_base_candidates, find_nav_files, stale_nav_systems
 from .rtklib import rtklib_version, run_rnx2rtkp, write_conf
 
 log = logging.getLogger("ppk")
@@ -85,9 +85,21 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     base_hdr = read_header(base_plain)
     if base_plain.resolve() != Path(base).resolve():
         log.info("base unpacked to %s", base_plain.name)
-    base_navs = sorted(p for p in Path(base).parent.iterdir()
-                       if p.is_file() and p.stem == Path(base).stem and p.suffix.lower() != Path(base).suffix.lower()
-                       and p.suffix.lower()[-1] in "npglfhqc" and len(p.suffix) == 4)
+    base_navs = find_nav_files(base, work)
+    if base_navs:
+        log.info("base navigation files: %s", ", ".join(p.name for p in base_navs))
+    first_obs = read_header(flight.obs).first_obs or mrk[0].time
+    stale = stale_nav_systems(flight.nav, first_obs)
+    if stale:
+        names = {"G": "GPS", "R": "GLONASS", "E": "Galileo", "C": "BeiDou", "J": "QZSS"}
+        desc = ", ".join(f"{names.get(k, k)} (newest {v:%Y-%m-%d})" for k, v in sorted(stale.items()))
+        if base_navs:
+            log.warning("rover NAV has unusable ephemerides for %s (DJI GPS week rollover bug); "
+                        "using the base navigation files instead", desc)
+        else:
+            log.warning("rover NAV has unusable ephemerides for %s (DJI GPS week rollover bug) and the base "
+                        "comes without navigation files: those satellites cannot be used. Download the base "
+                        "with its navigation files (ESTPOS zip) for a better solution", desc)
     hdr, checks = check_base(base_plain, flight, Path(os.environ.get("PPK_ANTEX", "")) or None)
     for c in checks:
         (log.error if c.level == "FAIL" else log.warning if c.level == "WARN" else log.info)("base: %s", c.message)
@@ -130,6 +142,7 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
                    "fix": sum(1 for e in matched if e.q == 1), "float": sum(1 for e in matched if e.q == 2),
                    "other": sum(1 for e in matched if e.q not in (1, 2))},
         "geo_txt_rows": n_geo, "images_missing": len(missing_images), "seconds": round(time.time() - t0, 1),
+        "base_nav_files": [p.name for p in base_navs], "rover_nav_stale": sorted(stale),
         "outputs": {"events_csv": csv_path.name, "geo_txt": "geo.txt", "trajectory_pos": res.pos_path.name,
                     "events_pos": res.events_path.name, "rtklib_log": "rtklib.log", "conf": conf_used.name},
     }

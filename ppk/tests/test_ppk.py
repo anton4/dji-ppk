@@ -169,3 +169,37 @@ def test_flight_path_fallback(tmp_path, monkeypatch):
     assert cli._flight_path("/somewhere/else/DJI_x") == tmp_path / "DJI_x"
     with pytest.raises(FileNotFoundError):
         cli._flight_path("DJI_missing")
+
+
+NAV_SAMPLE = """     3.05           N: GNSS NAV DATA    M: Mixed            RINEX VERSION / TYPE
+                                                            END OF HEADER
+G15 2007  2  2 16  0  0  .445653684437E-03  .295585778076E-11  .000000000000E+00
+      .600000000000E+02 -.760625000000E+02  .501378027264E-08  .102433957812E+01
+E03 2026  9 18 14  0  0  .100000000000E-03  .000000000000E+00  .000000000000E+00
+      .600000000000E+02 -.760625000000E+02  .501378027264E-08  .102433957812E+01
+"""
+
+
+def test_stale_nav_detection(tmp_path):
+    from ppk.rinex import nav_epochs, stale_nav_systems
+    nav = tmp_path / "DJI_x.NAV"
+    nav.write_text(NAV_SAMPLE)
+    ep = nav_epochs(nav)
+    assert ep["G"] == [datetime(2007, 2, 2, 16)] and ep["E"] == [datetime(2026, 9, 18, 14)]
+    stale = stale_nav_systems(nav, datetime(2026, 9, 18, 14, 18))
+    assert list(stale) == ["G"] and stale["G"].year == 2007
+
+
+def test_find_nav_files_zip_and_siblings(tmp_path):
+    import zipfile
+    from ppk.rinex import find_nav_files
+    z = tmp_path / "virt261o00.rnx.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        for name in ("virt261o00.26o", "virt261o00.26n", "virt261o00.26g", "virt261o00.26l", "virt261o00.26f"):
+            zf.writestr(name, "x")
+    navs = find_nav_files(z, tmp_path / "work")
+    assert [p.name for p in navs] == ["virt261o00.26f", "virt261o00.26g", "virt261o00.26l", "virt261o00.26n"]
+    d = tmp_path / "plain"; d.mkdir()
+    for name in ("virt255g30.26o", "virt255g30.26n", "virt255g30.26l", "other.26n", "virt255g30.26o.bak"):
+        (d / name).write_text("x")
+    assert [p.name for p in find_nav_files(d / "virt255g30.26o", tmp_path / "w2")] == ["virt255g30.26l", "virt255g30.26n"]
