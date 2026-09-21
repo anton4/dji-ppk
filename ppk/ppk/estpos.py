@@ -126,9 +126,9 @@ def format_order(order: EstposOrder, flight: Flight) -> str:
         f"  (UTC = GPST - {GPS_UTC_LEAP_SECONDS} s)",
         f" Photos:            {len(flight.images)}",
         "=" * 72,
-        " After download, copy the .??o/.rnx (or the zip) into the base directory and run:",
-        f"   ppk check-base <basefile> --flight {flight.directory}",
-        f"   ppk process {flight.directory} --base <basefile>",
+        f" After download, copy the .??o/.rnx (or the zip) into {flight.directory} and run:",
+        f"   ppk process {flight.directory}",
+        " (or keep it in /data/base; it is picked up automatically when it covers the flight)",
     ]
     return "\n".join(lines)
 

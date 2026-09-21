@@ -152,6 +152,36 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     return summary
 
 
+def _no_base_help(flight: Flight, base_dir: str | None) -> str:
+    """Human readable instructions when no base RINEX covers the flight."""
+    first, last, _ = scan_obs_span(flight.obs)
+    lines = [
+        "",
+        "=" * 72,
+        f" No base RINEX covers this flight: {flight.name}",
+        "=" * 72,
+        f" Flight observed:   {first:%Y-%m-%d %H:%M} - {last:%H:%M} GPST (= UTC + 18 s, so UTC {first:%H:%M}-{last:%H:%M})",
+        f" Looked in:         {flight.directory}",
+    ]
+    if base_dir:
+        lines.append(f"                    {base_dir}")
+    lines += [
+        " Rejected files are listed above with the time span they cover.",
+        "",
+        " What to do:",
+        "   1. Order a Virtual RINEX for the parameters below (ESTPOS portal, Post Processing -> RINEX Data,",
+        "      tick 'Virtual RINEX'). Times in the form are UTC.",
+        f"   2. Copy the downloaded .??o / .rnx / .zip into {flight.directory}",
+        "   3. Run this command again.",
+        "",
+    ]
+    try:
+        lines.append(format_order(plan_order(flight), flight))
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f" (could not compute the order parameters: {exc})")
+    return "\n".join(lines)
+
+
 # ----------------------------------------------------------------------------- commands
 
 def cmd_estpos_window(a: argparse.Namespace) -> int:
@@ -183,8 +213,8 @@ def cmd_process(a: argparse.Namespace) -> int:
         base = resolve_base(flight, Path(a.base_dir) if a.base_dir else None,
                             _out_dir_for(Path(a.out_dir), flight, a.in_place) / "work")
         if base is None:
-            log.error("no base file given and none found covering the flight (looked in %s and %s)",
-                      flight.directory, a.base_dir)
+            log.error("no base file covering the flight in %s or %s", flight.directory, a.base_dir)
+            print(_no_base_help(flight, a.base_dir))
             return 2
         log.info("auto-selected base %s", base)
     out_dir = _out_dir_for(Path(a.out_dir), flight, a.in_place)
