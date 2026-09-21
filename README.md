@@ -6,7 +6,9 @@ ESTPOS base station data and produces camera positions for photogrammetry (WebOD
 Engine: **RTKLIB-EX** from [rtklibexplorer/RTKLIB](https://github.com/rtklibexplorer/RTKLIB), tag `v2.5.1`.
 This is the continuation of the well known `demo5` branch, which was retired on 2025-07-26 (last tag `b34L`);
 all development by the same author now happens on `main`. The tag is a build argument (`RTKLIB_REF`), so
-`demo5`/`b34L` can still be built for comparison.
+`demo5`/`b34L` can still be built for comparison. RTKLIB is compiled with four carrier frequency slots
+(`RTKLIB_NFREQ=4`, upstream default 3) so `pos1-frequency=l1+l2+l5+l6` is accepted; the default configuration
+still uses three, because the fourth slot made both test flights worse (table below).
 
 ## Reference result
 
@@ -25,6 +27,7 @@ rows with base navigation files therefore differ more from Emlid while using thr
 | `--set pos1-navsys=27` (GPS+Galileo only, the default before 2026-09-21) | 1230/1230 | 100 % | 11.6 mm; photo positions within 2.8 mm median of the BeiDou default |
 | GLONASS added, `pos2-gloarmode=autocal` | 0 | 0 % | never fixes: DJI vs Leica inter-channel biases |
 | GLONASS added as float only (`pos1-navsys=31`) | 1230/1230 | 100 % | 11.5 mm, but the 2026-09-18 flight drops to 1141/1225 fixed |
+| `--set pos1-frequency=l1+l2+l5+l6` (Galileo E6 + BeiDou B3I) | 1230/1230 | 99.3 % | 37 mm shift, std 4.5/7.1 mm; the 2026-09-18 flight gets 0 % fixed |
 | `--set misc-timeinterp=on` | 0 | – | RTKLIB writes no event solutions |
 
 Processing time is about 5 s per flight.
