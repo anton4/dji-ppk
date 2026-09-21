@@ -325,12 +325,11 @@ def cmd_estpos_order(a: argparse.Namespace) -> int:
         return 2
     if left <= 7:
         log.warning("only %d day(s) left before ESTPOS drops the RINEX data for this flight", left)
-    base_project = (a.project or flight.name)
     if len(orders) > 1:
-        base_project = base_project[:28]
+        base_project = a.project[:28] if a.project else estpos_web.project_name(flight.name, 28)
         projects = [f"{base_project}-{i}" for i in range(1, len(orders) + 1)]
     else:
-        projects = [base_project]
+        projects = [a.project or estpos_web.project_name(flight.name)]
     for order, _fls in orders:
         if order.duration > timedelta(hours=a.max_hours):
             log.warning("order of %.2f h exceeds the %.1f h limit (one session is that long); the portal may refuse it",
@@ -372,10 +371,15 @@ def cmd_estpos_download(a: argparse.Namespace) -> int:
         else:
             # same planning as estpos-order, so the project names and spans match what was ordered before
             orders = plan_orders(flights, a.buffer, None, a.max_hours)
-            base_project = flight.name if len(orders) == 1 else flight.name[:28]
-            projects = [base_project] if len(orders) == 1 else [f"{base_project}-{i}" for i in range(1, len(orders) + 1)]
+            if len(orders) == 1:
+                projects = [estpos_web.project_name(flight.name)]
+            else:
+                projects = [f"{estpos_web.project_name(flight.name, 28)}-{i}" for i in range(1, len(orders) + 1)]
             paths = estpos_web.download_for_orders([(o, p) for (o, _f), p in zip(orders, projects)], flight.directory, user, pw,
                                                    timeout_min=a.timeout, headed=a.headed)
+    except estpos_web.NotOrdered as exc:
+        log.warning("%s", exc)
+        return 3  # distinct code: nothing failed, there is just nothing to download yet
     except Exception as exc:  # noqa: BLE001
         log.error("%s", exc)
         return 1

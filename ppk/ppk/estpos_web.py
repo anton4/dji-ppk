@@ -32,6 +32,33 @@ LANG_ET = "/sbc/Home/SetLanguage?lang=et"
 
 # ----------------------------------------------------------------------------- pure helpers (unit tested)
 
+PROJECT_MAX = 30  # the portal's project name field length
+
+
+def project_name(folder: str, max_len: int = PROJECT_MAX) -> str:
+    """Project name for the portal: the folder name, or, when too long, its start plus a short hash so two long
+    names that share a prefix ('... ehitus 1 4D' / '... ehitus 1 no elev optim 4D') stay distinguishable."""
+    folder = folder.strip()
+    if len(folder) <= max_len:
+        return folder
+    import hashlib
+    tag = hashlib.sha1(folder.encode("utf-8")).hexdigest()[:5]
+    return folder[: max_len - 6].rstrip() + "~" + tag
+
+
+def project_candidates(folder: str, max_len: int = PROJECT_MAX) -> list[str]:
+    """Names an order for this folder may carry on the portal: the current scheme first, then the plain
+    truncation used before the hash suffix existed."""
+    names = [project_name(folder, max_len)]
+    legacy = folder.strip()[:max_len]
+    if legacy not in names:
+        names.append(legacy)
+    return names
+
+
+class NotOrdered(FileNotFoundError):
+    """No matching order on the portal (a normal state, not a failure)."""
+
 def dms(value: float, deg_width: int) -> tuple[str, str]:
     """(digits for the input mask, human readable) for a positive angle.
 
@@ -303,12 +330,14 @@ def list_results(page) -> list[ResultEntry]:
     return entries
 
 
-def find_existing(entries: list[ResultEntry], project: str, order: EstposOrder) -> ResultEntry | None:
-    """An order already on the portal with the same project name, start time and length (ready or processing)."""
+def find_existing(entries: list[ResultEntry], project, order: EstposOrder) -> ResultEntry | None:
+    """An order already on the portal with the same project name (one of several candidates), start time and
+    length (ready or processing)."""
+    names = [project] if isinstance(project, str) else list(project)
     hours = order.duration.total_seconds() / 3600
     start = order.start_local.replace(tzinfo=None)
     for e in sorted(entries, key=lambda e: e.requested or datetime.min, reverse=True):
-        if e.project == project and e.start_local == start and e.duration_h is not None and abs(e.duration_h - hours) < 0.01:
+        if e.project in names and e.start_local == start and e.duration_h is not None and abs(e.duration_h - hours) < 0.01:
             return e
     return None
 
@@ -378,12 +407,12 @@ def order_and_download_many(orders: list[tuple[EstposOrder, str]], dest_dir: Pat
         for i, (order, project) in enumerate(orders, 1):
             if len(orders) > 1:
                 log.info("--- order %d/%d ---", i, len(orders))
-            short = project[:30]
-            prior = find_existing(existing, short, order)
+            short = project[:PROJECT_MAX]
+            prior = find_existing(existing, [short] + project_candidates(project), order)
             if prior is not None:
                 log.info("the portal already has this order (%r requested %s, %s): not ordering again, downloading it",
-                         short, prior.requested, "ready" if prior.ready else "still processing")
-                placed.append(short)
+                         prior.project, prior.requested, "ready" if prior.ready else "still processing")
+                placed.append(prior.project)
                 continue
             project = fill_order_form(page, order, project, rate_s, height)["project"]
             if screenshot:
@@ -438,20 +467,22 @@ def download_for_orders(orders: list[tuple[EstposOrder, str]], dest_dir: Path, u
         paths = []
         missing = []
         for order, project in orders:
-            short = project[:30]
-            entry = find_existing(entries, short, order)
+            names = [project[:PROJECT_MAX]] + project_candidates(project)
+            entry = find_existing(entries, names, order)
             if entry is None:
-                missing.append(f"{short} ({order.start_local:%Y-%m-%d %H:%M} local, {order.duration.total_seconds() / 3600:.2f} h)")
+                missing.append(f"{names[0]!r} for {order.start_local:%Y-%m-%d %H:%M} local, {order.duration.total_seconds() / 3600:.2f} h")
                 continue
             if not entry.ready:
                 if timeout_min <= 0:
-                    raise RuntimeError(f"order {short!r} is still processing on the portal; retry later or use --timeout")
-                entry = wait_for_result(page, short, None, timeout_min)
+                    raise RuntimeError(f"order {entry.project!r} is still processing on the portal; retry later or use --timeout")
+                entry = wait_for_result(page, entry.project, None, timeout_min)
             paths.append(download_entry(page, entry, dest_dir))
         if missing:
-            raise FileNotFoundError("no order on the portal matches: " + "; ".join(missing)
-                                    + ". Results are kept 14 days; run estpos-order to order it.")
+            raise NotOrdered("not ordered yet: the portal has no Virtual RINEX order " + "; ".join(missing)
+                             + " (results are kept 14 days). Use 'run' or 'order' to order it.")
         return paths
+    except NotOrdered:
+        raise
     except Exception:
         _error_screenshot(page, dest_dir)
         raise
