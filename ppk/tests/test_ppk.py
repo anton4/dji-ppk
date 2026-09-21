@@ -158,3 +158,14 @@ def test_out_dir_in_place(tmp_path):
     fl = Flight(tmp_path / "flight", tmp_path / "flight/DJI_x.OBS", tmp_path / "flight/DJI_x.NAV", tmp_path / "flight/DJI_x.MRK", {})
     assert _out_dir_for(Path("/data/out"), fl) == Path("/data/out/flight")
     assert _out_dir_for(Path("/data/out"), fl, in_place=True) == tmp_path / "flight"
+
+
+def test_flight_path_fallback(tmp_path, monkeypatch):
+    import ppk.cli as cli
+    (tmp_path / "DJI_x").mkdir()
+    monkeypatch.setattr(cli, "DEFAULT_FLIGHTS_DIR", str(tmp_path))
+    assert cli._flight_path(str(tmp_path / "DJI_x")) == tmp_path / "DJI_x"
+    assert cli._flight_path("../DJI_x") == tmp_path / "DJI_x"
+    assert cli._flight_path("/Users/someone/DJI_x") == tmp_path / "DJI_x"
+    with pytest.raises(FileNotFoundError):
+        cli._flight_path("DJI_missing")

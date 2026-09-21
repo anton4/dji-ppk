@@ -33,6 +33,25 @@ def _out_dir_for(out_root: Path, flight: Flight, in_place: bool = False) -> Path
     return flight.directory if in_place else out_root / flight.name
 
 
+DEFAULT_FLIGHTS_DIR = os.environ.get("PPK_FLIGHTS_DIR", "/data/flights")
+
+
+def _flight_path(arg: str) -> Path:
+    """Resolve a flight argument: as given, or by its last path component under /data/flights.
+
+    Lets users pass a bare folder name or a host path (e.g. ../DJI_xxx) from inside the container.
+    """
+    p = Path(arg)
+    if p.exists():
+        return p
+    alt = Path(DEFAULT_FLIGHTS_DIR) / p.name
+    if alt.exists():
+        log.info("%s not found, using %s", arg, alt)
+        return alt
+    raise FileNotFoundError(f"{arg}: not found (flight folders are mounted under {DEFAULT_FLIGHTS_DIR}, "
+                            f"try {DEFAULT_FLIGHTS_DIR}/{p.name})")
+
+
 def _parse_overrides(items: list[str] | None) -> dict[str, str]:
     out: dict[str, str] = {}
     for it in items or []:
@@ -136,14 +155,14 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
 # ----------------------------------------------------------------------------- commands
 
 def cmd_estpos_window(a: argparse.Namespace) -> int:
-    flight = load_flight(a.flight)
+    flight = load_flight(_flight_path(a.flight))
     order = plan_order(flight, a.buffer, a.height)
     print(format_order(order, flight))
     return 0
 
 
 def cmd_check_base(a: argparse.Namespace) -> int:
-    flight = load_flight(a.flight) if a.flight else None
+    flight = load_flight(_flight_path(a.flight)) if a.flight else None
     work = Path(a.work or "/tmp/ppk-check")
     plain = prepare_obs(Path(a.base), work)
     hdr, checks = check_base(plain, flight, Path(a.antex) if a.antex else None)
@@ -156,7 +175,7 @@ def cmd_check_base(a: argparse.Namespace) -> int:
 
 
 def cmd_process(a: argparse.Namespace) -> int:
-    flight = load_flight(a.flight)
+    flight = load_flight(_flight_path(a.flight))
     if a.base:
         base = Path(a.base)
     else:
