@@ -396,3 +396,15 @@ def test_folder_status_next_step(tmp_path):
     st = folder_status(d, flights, None)
     assert st.next == "reprocess" and "outdated" in st.result
     assert "DJI_x" in format_status([st])
+
+
+def test_find_flights_depth(tmp_path):
+    import shutil
+    from ppk.discover import find_flights
+    for rel in ("DJI_top", "other/DJI_nested"):
+        d = tmp_path / rel; d.mkdir(parents=True)
+        shutil.copy(FIX / "sample.obs", d / "DJI_a.OBS"); shutil.copy(FIX / "sample.MRK", d / "DJI_a.MRK"); (d / "DJI_a.NAV").write_text("")
+    (tmp_path / ".hidden").mkdir(); shutil.copy(FIX / "sample.obs", tmp_path / ".hidden" / "DJI_h.OBS")
+    assert [f.directory.name for f in find_flights(tmp_path)] == ["DJI_top"]          # default depth 1
+    assert find_flights(tmp_path, recursive=False) == []                                # root only
+    assert sorted(f.directory.name for f in find_flights(tmp_path, max_depth=2)) == ["DJI_nested", "DJI_top"]

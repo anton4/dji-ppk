@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
@@ -82,6 +83,7 @@ def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None)
 
 
 def scan_status(root: Path, base_dir: Path | None) -> list[FolderStatus]:
+    print(f"scanning {root} ...", file=sys.stderr, flush=True)
     groups = group_by_folder(find_flights(root))
     return [folder_status(d, fls, base_dir) for d, fls in sorted(groups.items())]
 

@@ -1,6 +1,7 @@
 """Locate DJI flight folders (OBS + NAV + MRK triplets) and their images."""
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -69,11 +70,29 @@ def index_images(directory: Path, window: tuple[datetime, datetime] | None = Non
     return out
 
 
-def find_flights(root: str | Path, recursive: bool = True) -> list[Flight]:
+def _obs_files(root: Path, max_depth: int) -> list[Path]:
+    """.OBS files in root and, up to max_depth levels down, in its subfolders (dot-folders skipped).
+    Flight folders are direct children of the flights directory, so depth 1 is the normal case; a full
+    recursive walk would crawl every unrelated file under the mount (hundreds of thousands, slow via Docker)."""
+    out: list[Path] = []
+    try:
+        entries = list(os.scandir(root))
+    except OSError:
+        return out
+    for e in entries:
+        if e.is_file(follow_symlinks=False) and e.name.lower().endswith(".obs"):
+            out.append(Path(e.path))
+        elif e.is_dir(follow_symlinks=False) and max_depth > 0 and not e.name.startswith("."):
+            out += _obs_files(Path(e.path), max_depth - 1)
+    return out
+
+
+def find_flights(root: str | Path, recursive: bool = True, max_depth: int | None = None) -> list[Flight]:
+    """Flights under root. `recursive=False` looks only in root itself; otherwise `max_depth` (default 1) levels."""
     root = Path(root)
+    depth = 0 if not recursive else (1 if max_depth is None else max_depth)
     flights: list[Flight] = []
-    it = root.rglob("*") if recursive else root.iterdir()
-    for obs in sorted(p for p in it if p.is_file() and p.suffix.lower() == ".obs"):
+    for obs in sorted(_obs_files(root, depth)):
         base = obs.with_suffix("")
         nav = _sibling(base, ".nav")
         mrk = _sibling(base, ".mrk")
