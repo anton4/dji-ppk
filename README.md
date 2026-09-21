@@ -44,12 +44,13 @@ ppk/                 python package `ppk` (stdlib only) with the CLI, parsers an
 examples/            reference comparison report for the flight above
 ```
 
-Mounted paths inside the containers: `/data/flights` (read-only), `/data/base` (read-only), `/data/out`.
+Mounted paths inside the containers: `/data/flights` (read-write, results are written next to the photos),
+`/data/base` (read-only), `/data/out` (only used with `PPK_IN_PLACE=0`).
 
 ## Usage
 
 ```sh
-cp .env.example .env            # adjust FLIGHTS_DIR / BASE_DIR / OUT_DIR
+cp .env.example .env            # FLIGHTS_DIR = folder that holds the DJI flight folders
 docker compose --profile cli build ppk
 
 # 1. What to order from ESTPOS for a flight folder
@@ -60,8 +61,10 @@ docker compose --profile cli run --rm ppk estpos-window /data/flights/<flight>
 #    date, quarter-hour start and length), download it into BASE_DIR, then validate it:
 docker compose --profile cli run --rm ppk check-base /data/base/<file> --flight /data/flights/<flight>
 
-# 3. Process
-docker compose --profile cli run --rm ppk process /data/flights/<flight> --base /data/base/<file>
+# 3. Process. With the base RINEX copied into the flight folder nothing else is needed; geo.txt, events.csv,
+#    summary.json, the trajectory .pos files and the RTKLIB log land in the flight folder next to the photos.
+docker compose --profile cli run --rm ppk process /data/flights/<flight>
+docker compose --profile cli run --rm ppk process /data/flights/<flight> --base /data/base/<file> --out-dir /data/out --no-in-place  # separate output tree
 
 # 4. Compare against an Emlid Studio *_events.pos (also done automatically when one is in the flight folder)
 docker compose --profile cli run --rm ppk compare /data/out/<flight> "/data/flights/<flight>/<name>_events.pos"
@@ -69,7 +72,8 @@ docker compose --profile cli run --rm ppk compare --antenna ...   # raw antenna 
 ```
 
 Options for `process`: `--conf <file>`, `--set key=value` (repeatable RTKLIB override), `--geo-accuracy`
-(adds horizontal/vertical accuracy columns to `geo.txt`), `--fixed-only`, `--keep-work`, `--name`.
+(adds horizontal/vertical accuracy columns to `geo.txt`), `--fixed-only`, `--keep-work`, `--in-place` / `--no-in-place`, `--out-dir`, `--name`.
+`PPK_IN_PLACE=1` (the compose default) makes `--in-place` the default for `process` and `watch`.
 Without `--base` the first RINEX file inside the flight folder or under `/data/base` that covers the flight is used.
 
 ### Watcher
@@ -81,10 +85,11 @@ docker compose logs -f ppk-watch
 
 Every `PPK_POLL_SECONDS` the watcher scans `/data/flights` for folders containing an `.OBS`/`.NAV`/`.MRK`
 triplet. A flight is processed once its files are stable and a base file covering it exists (in the flight
-folder or in `/data/base`). Results go to `/data/out/<flight>/`; a `DONE` marker prevents reprocessing and a
-`FAILED.log` records errors (retried when the input files change).
+folder or in `/data/base`). Results go into the flight folder (or `/data/out/<flight>/` with `PPK_IN_PLACE=0`);
+a `DONE` marker prevents reprocessing and a `FAILED.log` records errors (retried when the input files change).
+Drop a new flight folder and its base RINEX under `FLIGHTS_DIR` and the watcher picks it up on the next poll.
 
-## Outputs (`/data/out/<flight>/`)
+## Outputs (flight folder, or `/data/out/<flight>/`)
 
 | file | content |
 |---|---|
@@ -114,8 +119,10 @@ Emlid Studio (verified to ~1 mm). Image names are the real `DJI_..._NNNN_V.JPG` 
 - GPS L5, Galileo E5a/E5b and Galileo E1 use different tracking codes on the DJI (I, B) and Leica (Q, C)
   receivers. RTKLIB-EX resolves ambiguities fine anyway; `misc-rnxopt1/2` (e.g. `-EL5Q=-0.25`) exists
   for per-receiver code selection/phase shifts if another base ever needs it.
-- The `.trace` files that Emlid Studio leaves in flight folders can be gigabytes; the flight folder is
-  mounted read-only and nothing in it is copied except the `.OBS` (with events) into the work directory.
+- The `.trace` files that Emlid Studio leaves in flight folders can be gigabytes; nothing in the flight folder is
+  copied except the `.OBS` (with events) into a temporary `work/` directory, which is removed afterwards.
+- Emlid Studio `*_events.pos` files in the flight folder are used as comparison references; the tool's own
+  `*_trajectory_events.pos` is excluded, so re-running in place does not compare against itself.
 - Base files may be `.??o`, RINEX 3 long names (`.rnx`), Hatanaka (`.crx`, `.??d`), `.gz`, `.Z` or `.zip`.
 - ESTPOS has no API; the portal is Leica Spider Business Center. Files are available for 90 days.
 - GPST vs UTC: the ESTPOS order form is in UTC (GPST − 18 s); RTKLIB output and `events.csv` are GPST.

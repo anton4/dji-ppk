@@ -25,10 +25,12 @@ log = logging.getLogger("ppk")
 DEFAULT_CONF = os.environ.get("PPK_CONF", "/app/config/dji_m4e.conf")
 DEFAULT_OUT = os.environ.get("PPK_OUT_DIR", "/data/out")
 DEFAULT_BASE_DIR = os.environ.get("PPK_BASE_DIR", "/data/base")
+DEFAULT_IN_PLACE = os.environ.get("PPK_IN_PLACE", "").lower() in ("1", "true", "on", "yes")
 
 
-def _out_dir_for(out_root: Path, flight: Flight) -> Path:
-    return out_root / flight.name
+def _out_dir_for(out_root: Path, flight: Flight, in_place: bool = False) -> Path:
+    """Output directory: the flight folder itself with in_place, else <out_root>/<flight name>."""
+    return flight.directory if in_place else out_root / flight.name
 
 
 def _parse_overrides(items: list[str] | None) -> dict[str, str]:
@@ -117,7 +119,7 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     log.info("events: %d fixed, %d float, %d other, %d unsolved of %d; trajectory fix ratio %.1f%%",
              ev["fix"], ev["float"], ev["other"], ev["unsolved"], len(mrk), 100 * traj.fix_ratio)
 
-    refs = find_reference_events(flight.directory)
+    refs = find_reference_events(flight.directory, exclude=res.events_path)
     if refs:
         ref = read_pos(refs[-1])
         cmp_res = compare_events(matched, ref.rows)
@@ -159,13 +161,16 @@ def cmd_process(a: argparse.Namespace) -> int:
         base = Path(a.base)
     else:
         from .watch import resolve_base
-        base = resolve_base(flight, Path(a.base_dir) if a.base_dir else None, Path(a.out_dir) / flight.name / "work")
+        base = resolve_base(flight, Path(a.base_dir) if a.base_dir else None,
+                            _out_dir_for(Path(a.out_dir), flight, a.in_place) / "work")
         if base is None:
             log.error("no base file given and none found covering the flight (looked in %s and %s)",
                       flight.directory, a.base_dir)
             return 2
         log.info("auto-selected base %s", base)
-    out_dir = Path(a.out_dir) / (a.name or flight.name)
+    out_dir = _out_dir_for(Path(a.out_dir), flight, a.in_place)
+    if a.name and not a.in_place:
+        out_dir = Path(a.out_dir) / a.name
     summary = process_flight(flight, base, out_dir, Path(a.conf), _parse_overrides(a.set), a.geo_accuracy,
                              a.fixed_only, a.keep_work, [Path(n) for n in (a.nav or [])])
     print(f"\nResults in {out_dir}: events.csv, geo.txt ({summary['geo_txt_rows']} rows), summary.json")
@@ -192,7 +197,7 @@ def cmd_watch(a: argparse.Namespace) -> int:
         process_flight(flight, base, target, Path(a.conf), overrides, a.geo_accuracy, a.fixed_only)
 
     watch(Path(a.flights_dir), Path(a.base_dir) if a.base_dir else None, Path(a.out_dir), run,
-          int(a.poll or os.environ.get("PPK_POLL_SECONDS", 30)), once=a.once)
+          int(a.poll or os.environ.get("PPK_POLL_SECONDS", 30)), once=a.once, in_place=a.in_place)
     return 0
 
 
@@ -229,7 +234,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--base-dir", default=DEFAULT_BASE_DIR, help="directory searched for a covering base file")
     s.add_argument("--nav", action="append", help="additional navigation file(s)")
     s.add_argument("--out-dir", default=DEFAULT_OUT)
-    s.add_argument("--name", help="output sub-directory name (default: flight folder name)")
+    s.add_argument("--in-place", action=argparse.BooleanOptionalAction, default=DEFAULT_IN_PLACE,
+                   help="write results into the flight folder itself instead of <out-dir>/<flight> (env PPK_IN_PLACE)")
+    s.add_argument("--name", help="output sub-directory name (default: flight folder name; ignored with --in-place)")
     s.add_argument("--conf", default=DEFAULT_CONF, help="RTKLIB configuration file")
     s.add_argument("--set", action="append", metavar="KEY=VALUE", help="override an RTKLIB option (repeatable)")
     s.add_argument("--geo-accuracy", action="store_true", help="add horizontal/vertical accuracy columns to geo.txt")
@@ -248,6 +255,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("flights_dir")
     s.add_argument("--base-dir", default=DEFAULT_BASE_DIR)
     s.add_argument("--out-dir", default=DEFAULT_OUT)
+    s.add_argument("--in-place", action=argparse.BooleanOptionalAction, default=DEFAULT_IN_PLACE,
+                   help="write results into each flight folder instead of <out-dir>/<flight> (env PPK_IN_PLACE)")
     s.add_argument("--conf", default=DEFAULT_CONF)
     s.add_argument("--set", action="append", metavar="KEY=VALUE")
     s.add_argument("--poll", type=int)

@@ -47,10 +47,11 @@ def resolve_base(flight: Flight, base_dir: Path | None, workdir: Path) -> Path |
 
 
 def watch(flights_dir: Path, base_dir: Path | None, out_dir: Path, process_fn, poll_seconds: int = 30,
-          once: bool = False, settle_seconds: int = 120) -> None:
+          once: bool = False, settle_seconds: int = 120, in_place: bool = False) -> None:
     from .cli import _out_dir_for  # local import to avoid a cycle
     seen: dict[str, tuple] = {}
-    log.info("watching %s (base dir %s, output %s, poll %ss)", flights_dir, base_dir, out_dir, poll_seconds)
+    log.info("watching %s (base dir %s, output %s, poll %ss)", flights_dir, base_dir,
+             "in the flight folders" if in_place else out_dir, poll_seconds)
     while True:
         try:
             flights = find_flights(flights_dir)
@@ -63,7 +64,7 @@ def watch(flights_dir: Path, base_dir: Path | None, out_dir: Path, process_fn, p
                 sig = _signature(fl)
             except OSError:
                 continue
-            target = _out_dir_for(out_dir, fl)
+            target = _out_dir_for(out_dir, fl, in_place)
             done, failed = target / "DONE", target / "FAILED.log"
             if done.exists():
                 continue
