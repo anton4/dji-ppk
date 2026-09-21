@@ -432,7 +432,7 @@ def test_rinex_retention(tmp_path):
     shutil.copy(FIX / "sample.obs", d / "DJI_a.OBS"); shutil.copy(FIX / "sample.MRK", d / "DJI_a.MRK"); (d / "DJI_a.NAV").write_text("")
     flights = load_flights(d)
     st = folder_status(d, flights, None, now=datetime(2026, 12, 15))
-    assert st.next == "expired" and "no longer available" in st.base and "RINEX expired" in st.row()[2]
+    assert st.next == "expired" and st.base == "missing" and st.rinex_days_left < 0
     st = folder_status(d, flights, None, now=datetime(2026, 12, 5))
     assert st.next == "order" and "(6 d left)" in st.row()[2]
     (d / "base.26o").write_text((FIX / "base_header.26o").read_text() + "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 08 29 59.0000000  0  1\n")
@@ -465,3 +465,18 @@ def test_portal_error_detection():
     from ppk.estpos_web import portal_error
     assert portal_error("X-posiga ei saanud ühendust, palun proovige uuesti värskendades lehte.(Unsuccessful HTTP response (XPOS_HTTP_404))")
     assert portal_error("Tulemused\nRINEX andmed\nLae alla") is None
+
+
+def test_accuracy_text(tmp_path):
+    import json
+    from ppk.status import accuracy_text
+    one = tmp_path / "s1.json"
+    one.write_text(json.dumps({"rtk_vs_ppk": {"horizontal_error": {"rms_mm": 412.3}}, "quality": {"std_mm": {"horizontal": {"median": 3.6}}}}))
+    assert accuracy_text(one) == "41 cm → 0.4 cm"
+    merged = tmp_path / "s2.json"
+    merged.write_text(json.dumps({"session_summaries": [
+        {"rtk_vs_ppk": {"horizontal_error": {"rms_mm": 170.0}}, "quality": {"std_mm": {"horizontal": {"median": 3.5}}}},
+        {"rtk_vs_ppk": {"horizontal_error": {"rms_mm": 510.0}}, "quality": {"std_mm": {"horizontal": {"median": 4.0}}}}]}))
+    assert accuracy_text(merged) == "51 cm → 0.4 cm"
+    (tmp_path / "s3.json").write_text(json.dumps({"events": {}}))
+    assert accuracy_text(tmp_path / "s3.json") == ""
