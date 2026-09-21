@@ -135,7 +135,9 @@ Emlid Studio (verified to ~1 mm). Image names are the real `DJI_..._NNNN_V.JPG` 
   `*_trajectory_events.pos` is excluded, so re-running in place does not compare against itself.
 - Base files may be `.??o`, RINEX 3 long names (`.rnx`), Hatanaka (`.crx`, `.??d`), `.gz`, `.Z` or `.zip`.
 - ESTPOS has no API; the portal is Leica Spider Business Center. Files are available for 90 days.
-- GPST vs UTC: the ESTPOS order form is in UTC (GPST − 18 s); RTKLIB output and `events.csv` are GPST.
+- Time zones: the DJI folder name and the ESTPOS order form use Estonian time, so the order text and the log lines
+  about time spans lead with Estonian time (`TZ`, default `Europe/Tallinn`). RTKLIB output, `events.csv` and the
+  values in parentheses are GPST, which is UTC + 18 s.
 - **DJI `.NAV` files carry GPS ephemerides dated 1024 weeks early** (2007 instead of 2026, the GPS week rollover
   bug). RTKLIB silently ignores them, so with the rover NAV alone GPS satellites are not used at all. Always
   download the ESTPOS base **as the zip with its navigation files**: the processor extracts and uses them, and

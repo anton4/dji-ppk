@@ -240,3 +240,12 @@ def test_in_short_table():
     assert rtk["horizontal_error"]["rms_mm"] >= rtk["horizontal_error"]["p95_mm"] * 0 and rtk["vertical_error"]["max_mm"] >= 0
     text = format_in_short(rtk, solution_quality(matched, len(mrk), read_pos(FIX / "sample.pos").rows))
     assert "DJI on-board RTK (as flown)" in text and "after PPK with the RINEX base" in text and "cm" in text
+
+
+def test_local_time_helpers(monkeypatch):
+    from ppk.timeutil import gpst_to_local, span_local
+    monkeypatch.setenv("PPK_TZ", "Europe/Tallinn")
+    t = gpst_to_local(datetime(2026, 9, 18, 14, 18, 54))
+    assert (t.hour, t.minute, t.second, t.tzname()) == (17, 18, 36, "EEST")  # UTC+3 and minus 18 leap seconds
+    assert span_local(datetime(2026, 9, 18, 14, 18, 54), datetime(2026, 9, 18, 14, 38, 36)) == "2026-09-18 17:19 - 17:38 EEST"
+    assert span_local(datetime(2026, 9, 18, 14, 0, 0), datetime(2026, 9, 18, 14, 59, 59)) == "2026-09-18 17:00 - 18:00 EEST"

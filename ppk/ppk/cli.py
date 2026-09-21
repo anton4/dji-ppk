@@ -20,6 +20,7 @@ from .outputs import match_events, read_events_csv, write_events_csv, write_geo_
 from .pos import read_pos
 from .rinex import prepare_obs, read_header, scan_obs_span, find_base_candidates, find_nav_files, stale_nav_systems
 from .rtklib import rtklib_version, run_rnx2rtkp, write_conf
+from .timeutil import span_local
 
 log = logging.getLogger("ppk")
 
@@ -189,7 +190,7 @@ def _no_base_help(flight: Flight, base_dir: str | None) -> str:
         "=" * 72,
         f" No base RINEX covers this flight: {flight.name}",
         "=" * 72,
-        f" Flight observed:   {first:%Y-%m-%d %H:%M} - {last:%H:%M} GPST (= UTC + 18 s, so UTC {first:%H:%M}-{last:%H:%M})",
+        f" Flight observed:   {span_local(first, last)}  ({first:%H:%M} - {last:%H:%M} GPST)",
         f" Looked in:         {flight.directory}",
     ]
     if base_dir:
@@ -199,7 +200,7 @@ def _no_base_help(flight: Flight, base_dir: str | None) -> str:
         "",
         " What to do:",
         "   1. Order a Virtual RINEX for the parameters below (ESTPOS portal, Post Processing -> RINEX Data,",
-        "      tick 'Virtual RINEX'). Times in the form are UTC.",
+        "      tick 'Virtual RINEX'). The form uses Estonian time, like the DJI folder name.",
         f"   2. Copy the downloaded .??o / .rnx / .zip into {flight.directory}",
         "   3. Run this command again.",
         "",
