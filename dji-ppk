@@ -292,7 +292,10 @@ def menu_text(env: dict[str, str]) -> None:
             action = {"r": act_run, "d": act_download, "o": act_order, "p": act_process, "w": act_window}[text]
             for f in picked:
                 banner(f)
-                if action(env, f) != 0:
+                rc = action(env, f)
+                if rc == 3 and text == "d":
+                    print(c(f"○ {f}: not ordered yet, use r (run) or o (order) to order it", "yellow"))
+                elif rc != 0:
                     print(c(f"✘ {f} failed", "red", "bold"))
             if text != "w":
                 rescan()
@@ -436,7 +439,10 @@ def menu(env: dict[str, str]) -> None:
         sys.stdout.write("\033[2J\033[H")
         for f in folders:
             banner(f)
-            if ACTION_FN[key](env, f) != 0:
+            rc = ACTION_FN[key](env, f)
+            if rc == 3 and key == "d":
+                print(c(f"○ {f}: not ordered yet, press r (run) or o (order) to order it", "yellow"))
+            elif rc != 0:
                 print(c(f"✘ {f} failed", "red", "bold"))
         try:
             input(c("\nPress Enter to return to the menu ...", "dim"))

@@ -438,3 +438,13 @@ def test_rinex_retention(tmp_path):
     (d / "base.26o").write_text((FIX / "base_header.26o").read_text() + "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 08 29 59.0000000  0  1\n")
     st = folder_status(d, flights, None, now=datetime(2026, 12, 15))
     assert st.next == "photos"  # base present: still processable even though the portal has no data any more
+
+
+def test_project_name_unique_and_legacy():
+    from ppk.estpos_web import project_name, project_candidates
+    a = "2026-07-26 mõisavärava pargi ehitus 1 4D"
+    b = "2026-07-26 mõisavärava pargi ehitus 1 no elev optim 4D"
+    assert len(project_name(a)) <= 30 and len(project_name(b)) <= 30 and project_name(a) != project_name(b)
+    assert project_name("short name") == "short name"
+    assert project_candidates(a)[1] == a[:30] and project_candidates("short name") == ["short name"]
+    assert len(project_name(a, 28)) <= 28
