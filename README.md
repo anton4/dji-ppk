@@ -70,6 +70,9 @@ cp .env.example .env     # FLIGHTS_DIR = folder that holds the DJI flight folder
 ./dji-ppk                # interactive menu
 ```
 
+`./dji-ppk` keeps itself current: on every start it fetches the git remote, pulls a newer version when the working
+tree is clean, re-runs itself, and rebuilds an image that is older than the code before using it (`--no-update` skips this).
+
 `./dji-ppk` is a small Python launcher on the host (standard library only, needs `python3` and Docker with the
 compose plugin) that drives the two containers. Without arguments it shows a table of the flight folders and one
 START button:
