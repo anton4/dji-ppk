@@ -6,6 +6,7 @@
 #   ./dji-ppk run <folder>        order the Virtual RINEX if needed, then process (geo.txt & co)
 #   ./dji-ppk run --all           the same for every folder that is not done yet
 #   ./dji-ppk order <folder>      order + download only            ./dji-ppk process <folder>   process only
+#   ./dji-ppk download <folder>   download an order that already exists on the portal (never orders)
 #   ./dji-ppk window <folder>     print the order parameters       ./dji-ppk dry-run <folder>   fill the form, do not submit
 #   ./dji-ppk watch               start the folder watcher and follow its log
 #   ./dji-ppk build               (re)build both images
@@ -69,7 +70,8 @@ for r in json.load(sys.stdin):
     print(r["folder"] + "\t" + r["next"])' <<< "$STATUS_JSON"
 }
 
-cmd_order()   { need_env; need_creds; estpos estpos-order "$(cpath "$1")" "${@:2}"; }
+cmd_order()    { need_env; need_creds; estpos estpos-order "$(cpath "$1")" "${@:2}"; }
+cmd_download() { need_env; need_creds; estpos estpos-download "$(cpath "$1")" "${@:2}"; }
 cmd_dryrun()  { need_env; need_creds; estpos estpos-order "$(cpath "$1")" --dry-run "${@:2}"; }
 cmd_window()  { need_env; ppk estpos-window "$(cpath "$1")" "${@:2}"; }
 cmd_process() { need_env; ppk process "$(cpath "$1")" "${@:2}"; }
@@ -135,15 +137,17 @@ folder_menu() {
   echo; echo "${B}$f${N}"
   PS3="${B}What to do with $f: ${N}"
   local act
-  select act in "run: order the base if needed, then process" "order the base only" "process only" \
+  select act in "run: order the base if needed, then process" "order the base only" \
+                "download the base only (already ordered on the portal, never orders)" "process only" \
                 "show the order parameters" "dry-run the order (fill the form, do not submit)" "back"; do
     case "$REPLY" in
       1) cmd_run "$f"; break ;;
       2) cmd_order "$f"; break ;;
-      3) cmd_process "$f"; break ;;
-      4) cmd_window "$f"; break ;;
-      5) cmd_dryrun "$f"; break ;;
-      6) break ;;
+      3) cmd_download "$f"; break ;;
+      4) cmd_process "$f"; break ;;
+      5) cmd_window "$f"; break ;;
+      6) cmd_dryrun "$f"; break ;;
+      7) break ;;
       *) echo "invalid choice" ;;
     esac
   done
@@ -155,6 +159,7 @@ case "${1:-}" in
   run)           shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk run <folder> | --all"
                  if [[ "$1" == "--all" ]]; then cmd_run_all; else cmd_run "$1"; fi ;;
   order)         shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk order <folder>"; cmd_order "$@" ;;
+  download)      shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk download <folder>"; cmd_download "$@" ;;
   process)       shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk process <folder>"; cmd_process "$@" ;;
   window)        shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk window <folder>"; cmd_window "$@" ;;
   dry-run)       shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk dry-run <folder>"; cmd_dryrun "$@" ;;

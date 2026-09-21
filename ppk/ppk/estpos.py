@@ -28,7 +28,7 @@ RINEX_RETENTION_DAYS = 90  # the portal offers RINEX / Virtual RINEX for the las
 
 def rinex_days_left(first_obs_gpst: datetime, now: datetime | None = None) -> int:
     """Days until ESTPOS stops offering RINEX for a flight that started at `first_obs_gpst`; negative = expired."""
-    now = now or datetime.utcnow()
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
     return RINEX_RETENTION_DAYS - (now.date() - gpst_to_utc(first_obs_gpst).date()).days
 
 _XMP_ABS = re.compile(rb'drone-dji:AbsoluteAltitude="([+-]?\d+(?:\.\d+)?)"')

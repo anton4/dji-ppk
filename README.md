@@ -81,13 +81,17 @@ process only, show the order parameters, or a dry run of the order. Non-interact
 ./dji-ppk status                 # the table above (add --json for scripts)
 ./dji-ppk run <folder>           # order if needed + process -> geo.txt, events.csv, summary.json, accuracy.txt in the folder
 ./dji-ppk run --all              # every folder whose next step is not "done"
+./dji-ppk download <folder>      # fetch an order that already exists on the portal (matched by the flight's span), never orders
 ./dji-ppk order|process|window|dry-run <folder>
 ./dji-ppk watch                  # start the folder watcher and follow its log
 ```
 
 `<folder>` is the folder name under `FLIGHTS_DIR` (or any path to it). The `next` column is `order` when no base
 file covers every session, `process` when the base is there, `reprocess` when an input or the base is newer than
-the result, and `done` otherwise.
+the result, `expired` when the flight is older than ESTPOS's 90-day RINEX retention and no base file is in the
+folder, and `done` otherwise. Moving to another machine: copy the flight folders there and run `./dji-ppk download`
+(or `run`) for each, the orders placed earlier are found on the portal by project name and span and downloaded
+without re-ordering (the portal keeps results for 14 days).
 
 <details>
 <summary>What the launcher runs</summary>
