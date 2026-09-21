@@ -295,3 +295,16 @@ Lae alla"""
     assert empty.project == "" and empty.duration_h == 2.0
     assert find_entry([e, empty], "demo week 9", datetime(2026, 9, 21)) is e
     assert find_entry([e], "demo week 9", datetime(2026, 9, 22)) is None
+
+
+def test_index_images_separates_sessions(tmp_path):
+    from ppk.discover import index_images, image_timestamp
+    for n in ("DJI_20260905113447_0001_V.JPG", "DJI_20260905114417_0663_V.JPG",
+              "DJI_20260905115406_0001_V.JPG", "DJI_20260905120001_0002_V.JPG"):
+        (tmp_path / n).write_bytes(b"")
+    assert image_timestamp(tmp_path / "DJI_20260905113447_0001_V.JPG") == datetime(2026, 9, 5, 11, 34, 47)
+    first = index_images(tmp_path, (datetime(2026, 9, 5, 11, 34, 50), datetime(2026, 9, 5, 11, 45, 0)))
+    assert {i: p.name for i, p in first.items()} == {1: "DJI_20260905113447_0001_V.JPG", 663: "DJI_20260905114417_0663_V.JPG"}
+    second = index_images(tmp_path, (datetime(2026, 9, 5, 11, 54, 10), datetime(2026, 9, 5, 12, 5, 0)))
+    assert {i: p.name for i, p in second.items()} == {1: "DJI_20260905115406_0001_V.JPG", 2: "DJI_20260905120001_0002_V.JPG"}
+    assert len(index_images(tmp_path)) == 3  # no window: later file wins for index 1

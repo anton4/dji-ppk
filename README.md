@@ -101,7 +101,8 @@ Without `--base` the first RINEX file inside the flight folder or under `/data/b
 4. presses *Esita*, polls *Tulemused -> Virtuaalse RINEX-i andmed* until the entry with that project name is
    ready (usually a few minutes), downloads the zip into the flight folder and validates it with `check-base`.
 
-Options: `--dry-run` (fill, verify, save `estpos_order_form.png`, do not submit), `--no-wait` and later
+The portal truncates project names to 30 characters and asks for a confirmation (`Kinnita`) after `Esita`; both
+are handled. Options: `--dry-run` (fill, verify, save `estpos_order_form.png`, do not submit), `--no-wait` and later
 `ppk estpos-download <flight> --project <name>`, `--project`, `--rate`, `--timeout`, `--no-send-height`.
 The portal keeps results for 14 days and raw data for 90 days. The Virtual RINEX service is free on ESTPOS
 accounts, but every run places a real order, so the watcher does not order on its own.
@@ -138,6 +139,11 @@ The mean of that difference is the position error of the on-board RTK base (e.g.
 decimetres); the scatter is dominated by the drone's motion between the RTK epoch and the exposure. The run ends
 with a short table (`accuracy.txt`) giving the typical and worst photo position error as flown and RTKLIB's estimate
 after PPK, horizontal and vertical, in centimetres.
+
+A folder may hold several flight sessions (DJI restarts the photo index at 0001 for each one); photos are
+assigned to a session by the capture time in their file name, and `process` then needs the `.OBS` of the
+wanted session as argument. Results are written in place, so process one session per folder or use
+`--no-in-place`.
 
 Camera positions apply the DJI `.MRK` lever arm: camera = antenna + N, + E (mm), height − V. This matches
 Emlid Studio (verified to ~1 mm). Image names are the real `DJI_..._NNNN_V.JPG` files matched by the photo index.

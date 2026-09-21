@@ -277,6 +277,8 @@ def _report_downloaded_base(path: Path, flight: Flight) -> int:
         _, checks = check_base(plain, flight, Path(os.environ.get("PPK_ANTEX", "")) or None)
     print(f"\nBase file: {path}")
     for c in checks:
+        if "ANTEX" in c.message and not os.environ.get("PPK_ANTEX"):
+            continue  # the portal image has no ANTEX file; `ppk process` checks the antenna in the processing image
         print(f"  [{c.level:>4}] {c.message}")
     worst = "FAIL" if any(c.level == "FAIL" for c in checks) else "PASS"
     print(f"Overall: {worst}")
