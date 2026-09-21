@@ -59,6 +59,18 @@ def project_candidates(folder: str, max_len: int = PROJECT_MAX) -> list[str]:
 class NotOrdered(FileNotFoundError):
     """No matching order on the portal (a normal state, not a failure)."""
 
+
+class PortalUnavailable(RuntimeError):
+    """The portal's processing backend (X-pos) is not answering; nothing can be ordered or downloaded right now."""
+
+
+_PORTAL_ERROR_RE = re.compile(r"X-posiga ei saanud ühendust|XPOS_HTTP_\d+|Unsuccessful HTTP response|Could not connect to X-pos", re.I)
+
+
+def portal_error(text: str) -> str | None:
+    m = _PORTAL_ERROR_RE.search(text or "")
+    return m.group(0) if m else None
+
 def dms(value: float, deg_width: int) -> tuple[str, str]:
     """(digits for the input mask, human readable) for a positive angle.
 
@@ -208,6 +220,9 @@ def fill_order_form(page, order: EstposOrder, project: str, rate_s: int = 1, hei
     """
     page.goto(PORTAL + ORDER_PAGE)
     page.wait_for_selector("#enableVRinex")
+    err = portal_error(page.inner_text("body"))
+    if err:
+        raise PortalUnavailable(f"ESTPOS backend (X-pos) is not available right now: {err}. Try again later.")
     max_len = page.evaluate("() => document.getElementById('projectName').maxLength") or 0
     if max_len > 0 and len(project) > max_len:
         log.warning("project name %r is longer than the portal's %d characters, using %r", project, max_len, project[:max_len])
@@ -312,6 +327,9 @@ def list_results(page) -> list[ResultEntry]:
     if tab.count():
         tab.first.click()
     page.wait_for_timeout(1500)
+    err = portal_error(page.inner_text("body"))
+    if err:
+        raise PortalUnavailable(f"ESTPOS backend (X-pos) is not available right now: {err}")
     raw = page.evaluate(
         """() => {
             const pane = document.getElementById('VRinexResults') || document.body;
@@ -350,13 +368,25 @@ def find_entry(entries: list[ResultEntry], project: str, since: datetime | None)
 
 def wait_for_result(page, project: str, since: datetime | None, timeout_min: float, poll_s: int = 30) -> ResultEntry:
     deadline = time.time() + timeout_min * 60
+    backend_errors = 0
     while True:
-        entry = find_entry(list_results(page), project, since)
+        try:
+            entry = find_entry(list_results(page), project, since)
+            backend_errors = 0
+        except PortalUnavailable as exc:
+            backend_errors += 1
+            if backend_errors >= 3:
+                raise PortalUnavailable(f"{exc}. The order {project!r} was accepted and will be prepared once the backend is back; "
+                                        "run again later, the tool reuses it instead of ordering again.") from None
+            log.warning("%s (attempt %d/3), retrying in %d s", exc, backend_errors, poll_s)
+            page.wait_for_timeout(poll_s * 1000)
+            continue
         if entry and entry.ready:
             return entry
         if time.time() > deadline:
             raise TimeoutError(f"order {project!r} not ready after {timeout_min:.0f} min"
-                               + (" (not listed at all)" if entry is None else ""))
+                               + (" (not listed at all)" if entry is None else "")
+                               + ". It stays on the portal: run again later and it is downloaded without a new order.")
         log.info("%s: %s, checking again in %d s", project, "listed, still processing" if entry else "not listed yet", poll_s)
         page.wait_for_timeout(poll_s * 1000)
 
@@ -436,6 +466,8 @@ def order_and_download_many(orders: list[tuple[EstposOrder, "str | list[str]"]],
             entry = wait_for_result(page, project, None, timeout_min)  # newest entry with that project name
             paths.append(download_entry(page, entry, dest_dir))
         return paths
+    except PortalUnavailable:
+        raise
     except Exception:
         _error_screenshot(page, dest_dir)
         raise
@@ -484,7 +516,7 @@ def download_for_orders(orders: list[tuple[EstposOrder, "str | list[str]"]], des
             raise NotOrdered("not ordered yet: the portal has no Virtual RINEX order " + "; ".join(missing)
                              + " (results are kept 14 days). Use 'run' or 'order' to order it.")
         return paths
-    except NotOrdered:
+    except (NotOrdered, PortalUnavailable):
         raise
     except Exception:
         _error_screenshot(page, dest_dir)
