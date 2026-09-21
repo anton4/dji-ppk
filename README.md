@@ -47,7 +47,7 @@ Build any other version with `RTKLIB_REF=<tag|branch> docker compose --profile c
 ## Layout
 
 ```
-dji-ppk              host launcher (python3): checkbox menu / run / status, drives the two containers
+dji-ppk              host launcher (python3, stdlib): arrow-key menu / run / status, drives the two containers
 Dockerfile           multi-stage build: RTKLIB-EX (rnx2rtkp, convbin, pos2kml), crx2rnx, IGS ANTEX, python package
 Dockerfile.estpos    Playwright + Chromium image for ordering Virtual RINEX on the ESTPOS portal (`ppk-estpos` service)
 compose.yaml         services `ppk` (one-shot CLI), `ppk-estpos` (portal automation), both profile "cli", and `ppk-watch`
@@ -80,10 +80,12 @@ DJI_202609051108_033_site-a         2/1234       2026-09-05 11:34 - 12:04 EEST  
 DJI_202609181702_037_site-b         1/1225       2026-09-18 17:19 - 17:38 EEST  missing             not processed                       order
 ```
 
-Folders with something to do are pre-ticked. Type numbers (`1 3`, `2-4`) to tick or untick, `a` for all pending,
-`n` for none, then an action for everything ticked: **r** run (order the Virtual RINEX if no base file covers the
-sessions yet, then process), **d** download an existing order only, **o** order only, **p** process only, **w** show
-the order parameters, **W** start the watcher, **s** rescan, **q** quit. Non-interactive forms:
+Move with the arrow keys, tick folders with Space (folders with something to do are pre-ticked; `a` all pending,
+`A` all, `n` none), then Enter opens the action list for the ticked folders, or press the action key directly:
+**r** run (order the Virtual RINEX if no base file covers the sessions yet, then process), **d** download an existing
+order only, **o** order only, **p** process only, **w** show the order parameters, **W** start the watcher, **s** rescan,
+**q** quit. With nothing ticked an action applies to the highlighted folder. Without a terminal (pipes, Windows) a
+typed menu with the same keys is used. Non-interactive forms:
 
 ```sh
 ./dji-ppk status                 # the table above (add --json for scripts)
