@@ -9,15 +9,15 @@ import time
 import traceback
 from pathlib import Path
 
-from .discover import find_flights, Flight
+from .discover import find_flights, group_by_folder, Flight
 from .rinex import find_base_candidates, read_header, scan_obs_span, prepare_obs
 from .timeutil import span_local
 
 log = logging.getLogger("ppk.watch")
 
 
-def _signature(flight: Flight) -> tuple:
-    return tuple((p.name, p.stat().st_size, int(p.stat().st_mtime)) for p in (flight.obs, flight.nav, flight.mrk))
+def _signature(flights: list[Flight]) -> tuple:
+    return tuple((p.name, p.stat().st_size, int(p.stat().st_mtime)) for fl in flights for p in (fl.obs, fl.nav, fl.mrk))
 
 
 def _span(path: Path) -> tuple | None:
@@ -70,31 +70,34 @@ def watch(flights_dir: Path, base_dir: Path | None, out_dir: Path, process_fn, p
         except Exception as exc:  # noqa: BLE001
             log.error("scan failed: %s", exc)
             flights = []
-        for fl in flights:
-            key = str(fl.obs)
+        for directory, group in group_by_folder(flights).items():
+            fl = group[0]
+            key = str(directory)
             try:
-                sig = _signature(fl)
+                sig = _signature(group)
             except OSError:
                 continue
             target = _out_dir_for(out_dir, fl, in_place)
             done, failed = target / "DONE", target / "FAILED.log"
-            if done.exists():
+            if done.exists() and seen.get(key, sig) == sig:
                 continue
             if failed.exists() and seen.get(key) == sig:
                 continue  # already failed with these inputs; wait for them to change
             if seen.get(key) != sig:
                 seen[key] = sig
-                newest = max(p.stat().st_mtime for p in (fl.obs, fl.nav, fl.mrk))
+                newest = max(p.stat().st_mtime for f in group for p in (f.obs, f.nav, f.mrk))
                 if time.time() - newest < settle_seconds:
                     log.info("new/changed flight %s, waiting for files to settle", fl.name)
                     continue  # recently written: require a stable signature over two polls
-            base = resolve_base(fl, base_dir, target / "work")
-            if base is None:
-                log.info("%s: no base file covering the flight yet", fl.name)
+            bases = [resolve_base(f, base_dir) for f in group]
+            missing = [f.stem for f, b in zip(group, bases) if b is None]
+            if missing:
+                log.info("%s: no base file covering %s yet", fl.name, ", ".join(missing))
                 continue
-            log.info("processing %s with base %s", fl.name, base.name)
+            log.info("processing %s (%d session%s) with base %s", fl.name, len(group), "" if len(group) == 1 else "s",
+                     ", ".join(sorted({b.name for b in bases})))
             try:
-                process_fn(fl, base, target)
+                process_fn(group, bases, target)
                 done.write_text(time.strftime("%Y-%m-%dT%H:%M:%S\n"))
                 if failed.exists():
                     failed.unlink()

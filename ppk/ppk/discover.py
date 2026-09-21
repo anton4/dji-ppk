@@ -97,8 +97,13 @@ def session_window(mrk_path: Path) -> tuple[datetime, datetime] | None:
         return None
 
 
-def load_flight(path: str | Path) -> Flight:
-    """A flight folder (or a direct .OBS path) must contain exactly one OBS/NAV/MRK triplet."""
+def load_flights(path: str | Path) -> list[Flight]:
+    """All flight sessions (OBS/NAV/MRK triplets) of a folder, oldest first, or the one session of a .OBS path.
+
+    A folder holds several sessions when the pilot swapped batteries or restarted after rain: each restart
+    gives a new triplet and a photo index starting at 0001 again. They belong to one flight day and share one
+    base file and one geo.txt.
+    """
     p = Path(path)
     if p.is_file():
         flights = find_flights(p.parent, recursive=False)
@@ -107,6 +112,19 @@ def load_flight(path: str | Path) -> Flight:
         flights = find_flights(p, recursive=False)
     if not flights:
         raise FileNotFoundError(f"{path}: no OBS/NAV/MRK triplet found")
+    return sorted(flights, key=lambda f: f.stem)
+
+
+def load_flight(path: str | Path) -> Flight:
+    """Exactly one session: a .OBS path, or a folder with a single triplet."""
+    flights = load_flights(path)
     if len(flights) > 1:
-        raise ValueError(f"{path}: {len(flights)} triplets found, pass the .OBS file explicitly")
+        raise ValueError(f"{path}: {len(flights)} sessions found, pass the .OBS file explicitly")
     return flights[0]
+
+
+def group_by_folder(flights: list[Flight]) -> dict[Path, list[Flight]]:
+    groups: dict[Path, list[Flight]] = {}
+    for f in flights:
+        groups.setdefault(f.directory, []).append(f)
+    return {k: sorted(v, key=lambda f: f.stem) for k, v in groups.items()}

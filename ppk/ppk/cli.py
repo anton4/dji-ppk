@@ -8,12 +8,13 @@ import re
 import shutil
 import sys
 import time
+from datetime import timedelta
 from pathlib import Path
 
 from . import __version__
 from .compare import compare_events, format_report, find_reference_events
-from .discover import Flight, load_flight
-from .estpos import check_base, format_order, plan_order
+from .discover import Flight, load_flight, load_flights
+from .estpos import check_base, format_order, plan_order, plan_orders
 from .events import write_obs_with_events
 from .mrk import parse_mrk
 from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_summary, solution_quality, format_quality, rtk_vs_ppk, format_rtk_vs_ppk, format_in_short
@@ -68,7 +69,10 @@ def _parse_overrides(items: list[str] | None) -> dict[str, str]:
 
 def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(DEFAULT_CONF),
                    overrides: dict[str, str] | None = None, geo_accuracy: bool = False,
-                   fixed_only: bool = False, keep_work: bool = False, extra_nav: list[Path] | None = None) -> dict:
+                   fixed_only: bool = False, keep_work: bool = False, extra_nav: list[Path] | None = None,
+                   prefix: str = "", matched_out: list | None = None) -> dict:
+    """Process one session. `prefix` (e.g. '<stem>_') names the outputs when a folder holds several sessions;
+    `matched_out`, if given, receives the CameraEvents so the caller can merge sessions into one geo.txt."""
     t0 = time.time()
     out_dir.mkdir(parents=True, exist_ok=True)
     work = out_dir / "work"
@@ -117,11 +121,11 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
 
     if (overrides or {}).get("misc-timeinterp", "off").lower() in ("on", "1"):
         log.warning("misc-timeinterp=on suppresses RTKLIB's *_events.pos output; expect no camera solutions")
-    conf_used = write_conf(conf, out_dir / "rtklib_used.conf", overrides)
+    conf_used = write_conf(conf, out_dir / f"{prefix}rtklib_used.conf", overrides)
     out_pos = out_dir / f"{flight.stem}_trajectory.pos"
     navs = [flight.nav] + list(extra_nav or []) + base_navs
     log.info("running %s ...", rtklib_version())
-    res = run_rnx2rtkp(conf_used, out_pos, rover_events, base_plain, navs, out_dir / "rtklib.log")
+    res = run_rnx2rtkp(conf_used, out_pos, rover_events, base_plain, navs, out_dir / f"{prefix}rtklib.log")
     log.info("rnx2rtkp finished in %.1f s (exit %d)", res.seconds, res.returncode)
     if not res.events_path.exists() or not res.pos_path.exists():
         raise RuntimeError(f"rnx2rtkp produced no solution, see {res.log_path}")
@@ -132,9 +136,11 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     if unmatched:
         log.warning("%d MRK events have no RTKLIB solution (ids %s ...)", len(unmatched), [e.id for e in unmatched][:5])
 
-    csv_path = out_dir / "events.csv"
+    csv_path = out_dir / f"{prefix}events.csv"
     write_events_csv(csv_path, matched)
-    n_geo = write_geo_txt(out_dir / "geo.txt", matched, with_accuracy=geo_accuracy, fixed_only=fixed_only)
+    n_geo = write_geo_txt(out_dir / f"{prefix}geo.txt", matched, with_accuracy=geo_accuracy, fixed_only=fixed_only)
+    if matched_out is not None:
+        matched_out.extend(matched)
     summary = {
         "flight": flight.name, "rover_obs": flight.obs.name, "mrk": flight.mrk.name, "base": str(base),
         "base_marker": base_hdr.marker_name, "base_virtual": base_hdr.is_virtual, "base_antenna": base_hdr.ant_type,
@@ -145,10 +151,10 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
                    "other": sum(1 for e in matched if e.q not in (1, 2))},
         "geo_txt_rows": n_geo, "images_missing": len(missing_images), "seconds": round(time.time() - t0, 1),
         "base_nav_files": [p.name for p in base_navs], "rover_nav_stale": sorted(stale),
-        "outputs": {"events_csv": csv_path.name, "geo_txt": "geo.txt", "trajectory_pos": res.pos_path.name,
-                    "events_pos": res.events_path.name, "rtklib_log": "rtklib.log", "conf": conf_used.name},
+        "outputs": {"events_csv": csv_path.name, "geo_txt": f"{prefix}geo.txt", "trajectory_pos": res.pos_path.name,
+                    "events_pos": res.events_path.name, "rtklib_log": f"{prefix}rtklib.log", "conf": conf_used.name},
     }
-    write_summary(out_dir / "summary.json", summary)
+    write_summary(out_dir / f"{prefix}summary.json", summary)
     ev = summary["events"]
     log.info("events: %d fixed, %d float, %d other, %d unsolved of %d; trajectory fix ratio %.1f%%",
              ev["fix"], ev["float"], ev["other"], ev["unsolved"], len(mrk), 100 * traj.fix_ratio)
@@ -161,34 +167,40 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
         if m:
             baseline_km = float(m.group(1))
     refs = find_reference_events(flight.directory, exclude=res.events_path)
+    own = [r for r in refs if r.name.startswith(flight.stem)]
+    refs = own or ([] if prefix else refs)  # several sessions: only a reference named after this session counts
     print()
     print(format_quality(quality, flight.name, Path(base).name, baseline_km, refs[-1].name if refs else None))
     rtk = rtk_vs_ppk(matched)
     summary["rtk_vs_ppk"] = rtk
     print(format_rtk_vs_ppk(rtk))
     in_short = format_in_short(rtk, quality)
-    (out_dir / "accuracy.txt").write_text(in_short + "\n")
+    (out_dir / f"{prefix}accuracy.txt").write_text(in_short + "\n")
     if refs:
         ref = read_pos(refs[-1])
         cmp_res = compare_events(matched, ref.rows)
         report = format_report(cmp_res, f"ours vs reference {refs[-1].name}")
-        (out_dir / "compare_report.txt").write_text(report + "\n")
+        (out_dir / f"{prefix}compare_report.txt").write_text(report + "\n")
         summary["compare"] = {"reference": refs[-1].name, **cmp_res.as_dict()}
         print(report)
     print(in_short)
-    write_summary(out_dir / "summary.json", summary)
+    write_summary(out_dir / f"{prefix}summary.json", summary)
     if not keep_work:
         shutil.rmtree(work, ignore_errors=True)
     return summary
 
 
-def _no_base_help(flight: Flight, base_dir: str | None) -> str:
-    """Human readable instructions when no base RINEX covers the flight."""
-    first, last, _ = scan_obs_span(flight.obs)
+def _no_base_help(flights, base_dir: str | None) -> str:
+    """Human readable instructions when no base RINEX covers the flight (all sessions of the folder)."""
+    flights = list(flights) if isinstance(flights, (list, tuple)) else [flights]
+    flight = flights[0]
+    spans = [scan_obs_span(fl.obs)[:2] for fl in flights]
+    first = min(sp[0] for sp in spans)
+    last = max(sp[1] for sp in spans)
     lines = [
         "",
         "=" * 72,
-        f" No base RINEX covers this flight: {flight.name}",
+        f" No base RINEX covers this flight: {flight.name}" + ("" if len(flights) == 1 else f" ({len(flights)} sessions)"),
         "=" * 72,
         f" Flight observed:   {span_local(first, last)}  ({first:%H:%M} - {last:%H:%M} GPST)",
         f" Looked in:         {flight.directory}",
@@ -206,18 +218,70 @@ def _no_base_help(flight: Flight, base_dir: str | None) -> str:
         "",
     ]
     try:
-        lines.append(format_order(plan_order(flight), flight))
+        for order, fls in plan_orders(flights):
+            lines.append(format_order(order, fls))
     except Exception as exc:  # noqa: BLE001
         lines.append(f" (could not compute the order parameters: {exc})")
     return "\n".join(lines)
 
 
+def process_sessions(flights: list[Flight], bases: list[Path], out_dir: Path, conf: Path = Path(DEFAULT_CONF),
+                     overrides: dict[str, str] | None = None, geo_accuracy: bool = False, fixed_only: bool = False,
+                     keep_work: bool = False, extra_nav: list[Path] | None = None) -> dict:
+    """Process every session of a flight day and, with more than one, merge them into one geo.txt / events.csv /
+    summary.json / accuracy.txt (per-session files keep the session stem as prefix)."""
+    if len(flights) == 1:
+        return process_flight(flights[0], bases[0], out_dir, conf, overrides, geo_accuracy, fixed_only, keep_work, extra_nav)
+    all_matched: list = []
+    summaries = []
+    for i, (fl, base) in enumerate(zip(flights, bases), 1):
+        log.info("=== session %d/%d: %s ===", i, len(flights), fl.stem)
+        summaries.append(process_flight(fl, base, out_dir, conf, overrides, geo_accuracy, fixed_only, keep_work,
+                                        extra_nav, prefix=f"{fl.stem}_", matched_out=all_matched))
+    all_matched.sort(key=lambda e: e.time)
+    write_events_csv(out_dir / "events.csv", all_matched)
+    n_geo = write_geo_txt(out_dir / "geo.txt", all_matched, with_accuracy=geo_accuracy, fixed_only=fixed_only)
+    merged = merge_summaries(flights[0].name, summaries, n_geo)
+    write_summary(out_dir / "summary.json", merged)
+    parts = []
+    for fl in flights:
+        acc = out_dir / f"{fl.stem}_accuracy.txt"
+        if acc.exists():
+            parts.append(f"### session {fl.stem}\n" + acc.read_text())
+    (out_dir / "accuracy.txt").write_text("\n".join(parts))
+    ev = merged["events"]
+    log.info("all sessions: %d photos, %d fixed, %d unsolved; geo.txt has %d rows", ev["mrk"], ev["fix"], ev["unsolved"], n_geo)
+    return merged
+
+
+def merge_summaries(name: str, summaries: list[dict], n_geo: int) -> dict:
+    keys = ("mrk", "solved", "unsolved", "fix", "float", "other")
+    events = {k: sum(s["events"][k] for s in summaries) for k in keys}
+    traj_total = sum(s["trajectory"].get("total", 0) for s in summaries)
+    traj_fix = sum(s["trajectory"].get("fix", 0) for s in summaries)
+    return {
+        "flight": name, "sessions": [s["rover_obs"] for s in summaries], "session_summaries": summaries,
+        "events": events, "geo_txt_rows": n_geo,
+        "trajectory": {"fix": traj_fix, "total": traj_total},
+        "trajectory_fix_ratio": round(traj_fix / traj_total, 4) if traj_total else 0.0,
+        "images_missing": sum(s["images_missing"] for s in summaries),
+        "seconds": round(sum(s["seconds"] for s in summaries), 1),
+        "outputs": {"events_csv": "events.csv", "geo_txt": "geo.txt", "per_session": [s["outputs"] for s in summaries]},
+    }
+
+
 # ----------------------------------------------------------------------------- commands
 
+def _print_orders(orders) -> None:
+    if len(orders) > 1:
+        print(f"\n {len(orders)} orders needed: the sessions span more than the portal's limit, split at the gaps between sessions")
+    for order, fls in orders:
+        print(format_order(order, fls))
+
+
 def cmd_estpos_window(a: argparse.Namespace) -> int:
-    flight = load_flight(_flight_path(a.flight))
-    order = plan_order(flight, a.buffer, a.height)
-    print(format_order(order, flight))
+    flights = load_flights(_flight_path(a.flight))
+    _print_orders(plan_orders(flights, a.buffer, a.height, a.max_hours))
     return 0
 
 
@@ -235,22 +299,35 @@ def cmd_estpos_order(a: argparse.Namespace) -> int:
     except ImportError as exc:
         raise SystemExit(f"playwright is not installed ({exc}); use the ppk-estpos compose service: "
                          "docker compose --profile cli run --rm ppk-estpos estpos-order <flight>")
-    flight = load_flight(_flight_path(a.flight))
-    order = plan_order(flight, a.buffer, a.height)
-    print(format_order(order, flight))
-    project = a.project or flight.name
+    flights = load_flights(_flight_path(a.flight))
+    flight = flights[0]
+    orders = plan_orders(flights, a.buffer, a.height, a.max_hours)
+    _print_orders(orders)
+    base_project = (a.project or flight.name)
+    if len(orders) > 1:
+        base_project = base_project[:28]
+        projects = [f"{base_project}-{i}" for i in range(1, len(orders) + 1)]
+    else:
+        projects = [base_project]
+    for order, _fls in orders:
+        if order.duration > timedelta(hours=a.max_hours):
+            log.warning("order of %.2f h exceeds the %.1f h limit (one session is that long); the portal may refuse it",
+                        order.duration.total_seconds() / 3600, a.max_hours)
     user, pw = _estpos_credentials()
     dest = flight.directory
     shot = dest / "estpos_order_form.png" if (a.dry_run or a.screenshot) else None
+    height = orders[0][0].height if a.send_height else None
     try:
-        path = estpos_web.order_and_download(order, project, dest, user, pw, rate_s=a.rate, height=order.height if a.send_height else None,
-                                             wait=not a.no_wait, timeout_min=a.timeout, headed=a.headed, dry_run=a.dry_run, screenshot=shot)
+        paths = estpos_web.order_and_download_many([(o, p) for (o, _f), p in zip(orders, projects)], dest, user, pw,
+                                                   rate_s=a.rate, height=height, wait=not a.no_wait, timeout_min=a.timeout,
+                                                   headed=a.headed, dry_run=a.dry_run, screenshot=shot)
     except Exception as exc:  # noqa: BLE001
         log.error("%s", exc)
         return 1
-    if path is None:
-        return 0
-    return _report_downloaded_base(path, flight)
+    rc = 0
+    for path in paths:
+        rc = max(rc, _report_downloaded_base(path, flight, flights))
+    return rc
 
 
 def cmd_estpos_download(a: argparse.Namespace) -> int:
@@ -259,7 +336,7 @@ def cmd_estpos_download(a: argparse.Namespace) -> int:
         from . import estpos_web
     except ImportError as exc:
         raise SystemExit(f"playwright is not installed ({exc}); use the ppk-estpos compose service")
-    flight = load_flight(_flight_path(a.flight))
+    flight = load_flights(_flight_path(a.flight))[0]
     project = a.project or flight.name
     user, pw = _estpos_credentials()
     try:
@@ -270,11 +347,17 @@ def cmd_estpos_download(a: argparse.Namespace) -> int:
     return _report_downloaded_base(path, flight)
 
 
-def _report_downloaded_base(path: Path, flight: Flight) -> int:
+def _report_downloaded_base(path: Path, flight: Flight, flights: list[Flight] | None = None) -> int:
+    """Validate a downloaded base against every session of the folder and print the checks."""
     import tempfile
+    sessions = flights or [flight]
+    checks = []
     with tempfile.TemporaryDirectory(prefix="ppk-basecheck-") as tmp:
         plain = prepare_obs(path, tmp)
-        _, checks = check_base(plain, flight, Path(os.environ.get("PPK_ANTEX", "")) or None)
+        for i, fl in enumerate(sessions):
+            _, cs = check_base(plain, fl, Path(os.environ.get("PPK_ANTEX", "")) or None)
+            # base-only checks are identical for every session: keep them once, flight checks per session
+            checks += [c for c in cs if i == 0 or "flight" in c.message or "baseline" in c.message]
     print(f"\nBase file: {path}")
     for c in checks:
         if "ANTEX" in c.message and not os.environ.get("PPK_ANTEX"):
@@ -299,24 +382,32 @@ def cmd_check_base(a: argparse.Namespace) -> int:
     return 1 if worst == "FAIL" else 0
 
 
+def resolve_bases(flights: list[Flight], base_arg: str | None, base_dir: str | None) -> list[Path | None]:
+    """Base file per session: the --base argument for all, else auto-detection per session."""
+    if base_arg:
+        return [Path(base_arg)] * len(flights)
+    from .watch import resolve_base
+    return [resolve_base(fl, Path(base_dir) if base_dir else None) for fl in flights]
+
+
 def cmd_process(a: argparse.Namespace) -> int:
-    flight = load_flight(_flight_path(a.flight))
-    if a.base:
-        base = Path(a.base)
-    else:
-        from .watch import resolve_base
-        base = resolve_base(flight, Path(a.base_dir) if a.base_dir else None,
-                            _out_dir_for(Path(a.out_dir), flight, a.in_place) / "work")
-        if base is None:
-            log.error("no base file covering the flight in %s or %s", flight.directory, a.base_dir)
-            print(_no_base_help(flight, a.base_dir))
-            return 2
-        log.info("auto-selected base %s", base)
-    out_dir = _out_dir_for(Path(a.out_dir), flight, a.in_place)
+    flights = load_flights(_flight_path(a.flight))
+    if len(flights) > 1:
+        log.info("%s: %d sessions (%s), results are merged into one geo.txt", flights[0].name, len(flights),
+                 ", ".join(f.stem for f in flights))
+    bases = resolve_bases(flights, a.base, a.base_dir)
+    missing = [fl for fl, b in zip(flights, bases) if b is None]
+    if missing:
+        log.error("no base file covering %s in %s or %s", ", ".join(f.stem for f in missing), flights[0].directory, a.base_dir)
+        print(_no_base_help(flights, a.base_dir))
+        return 2
+    for fl, b in zip(flights, bases):
+        log.info("%s: base %s", fl.stem, b.name)
+    out_dir = _out_dir_for(Path(a.out_dir), flights[0], a.in_place)
     if a.name and not a.in_place:
         out_dir = Path(a.out_dir) / a.name
-    summary = process_flight(flight, base, out_dir, Path(a.conf), _parse_overrides(a.set), a.geo_accuracy,
-                             a.fixed_only, a.keep_work, [Path(n) for n in (a.nav or [])])
+    summary = process_sessions(flights, bases, out_dir, Path(a.conf), _parse_overrides(a.set), a.geo_accuracy,
+                               a.fixed_only, a.keep_work, [Path(n) for n in (a.nav or [])])
     print(f"\nResults in {out_dir}: geo.txt ({summary['geo_txt_rows']} rows), events.csv, summary.json, accuracy.txt")
     return 0
 
@@ -337,8 +428,8 @@ def cmd_watch(a: argparse.Namespace) -> int:
     from .watch import watch
     overrides = _parse_overrides(a.set)
 
-    def run(flight: Flight, base: Path, target: Path) -> None:
-        process_flight(flight, base, target, Path(a.conf), overrides, a.geo_accuracy, a.fixed_only)
+    def run(flights: list[Flight], bases: list[Path], target: Path) -> None:
+        process_sessions(flights, bases, target, Path(a.conf), overrides, a.geo_accuracy, a.fixed_only)
 
     watch(Path(a.flights_dir), Path(a.base_dir) if a.base_dir else None, Path(a.out_dir), run,
           int(a.poll or os.environ.get("PPK_POLL_SECONDS", 30)), once=a.once, in_place=a.in_place)
@@ -363,6 +454,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("flight", help="flight folder (or .OBS file)")
     s.add_argument("--buffer", type=int, default=5, help="minutes of margin before/after the flight (default 5)")
     s.add_argument("--height", type=float, help="override the virtual point ellipsoidal height (m)")
+    s.add_argument("--max-hours", type=float, default=6.0, help="max length of one Virtual RINEX order; a longer flight day is split into several orders at the gaps between sessions (each order only spans its sessions plus the buffer)")
     s.set_defaults(func=cmd_estpos_window)
 
     s = sub.add_parser("estpos-order", help="order the Virtual RINEX for a flight on the ESTPOS portal and download it (Playwright)")
@@ -373,6 +465,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--send-height", action=argparse.BooleanOptionalAction, default=True,
                    help="fill the height field (default) or leave it to the portal's automatic value")
     s.add_argument("--rate", type=int, default=1, choices=(1, 5, 10, 15, 20, 30, 60), help="observation rate in seconds")
+    s.add_argument("--max-hours", type=float, default=6.0, help="max length of one Virtual RINEX order; a longer flight day is split into several orders at the gaps between sessions (each order only spans its sessions plus the buffer)")
     s.add_argument("--no-wait", action="store_true", help="submit only; download later with estpos-download")
     s.add_argument("--timeout", type=float, default=60, help="minutes to wait for the portal to prepare the file")
     s.add_argument("--dry-run", action="store_true", help="fill and verify the form, save a screenshot, do not submit")
@@ -395,7 +488,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(func=cmd_check_base)
 
     s = sub.add_parser("process", help="run PPK for one flight")
-    s.add_argument("flight", help="flight folder (or .OBS file)")
+    s.add_argument("flight", help="flight folder (all sessions, merged geo.txt) or one .OBS file")
     s.add_argument("--base", help="base RINEX file (.??o/.rnx/.crx/.gz/.zip); default: auto-detect")
     s.add_argument("--base-dir", default=DEFAULT_BASE_DIR, help="directory searched for a covering base file")
     s.add_argument("--nav", action="append", help="additional navigation file(s)")

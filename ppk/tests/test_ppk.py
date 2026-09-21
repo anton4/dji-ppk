@@ -308,3 +308,55 @@ def test_index_images_separates_sessions(tmp_path):
     second = index_images(tmp_path, (datetime(2026, 9, 5, 11, 54, 10), datetime(2026, 9, 5, 12, 5, 0)))
     assert {i: p.name for i, p in second.items()} == {1: "DJI_20260905115406_0001_V.JPG", 2: "DJI_20260905120001_0002_V.JPG"}
     assert len(index_images(tmp_path)) == 3  # no window: later file wins for index 1
+
+
+def test_load_flights_and_combined_order(tmp_path):
+    import shutil
+    from ppk.discover import load_flights, load_flight, group_by_folder
+    for stem in ("DJI_20260905113447_0002_D", "DJI_20260905115406_0002_D"):
+        shutil.copy(FIX / "sample.obs", tmp_path / f"{stem}.OBS")
+        shutil.copy(FIX / "sample.MRK", tmp_path / f"{stem}.MRK")
+        (tmp_path / f"{stem}.NAV").write_text("")
+    flights = load_flights(tmp_path)
+    assert [f.stem for f in flights] == ["DJI_20260905113447_0002_D", "DJI_20260905115406_0002_D"]
+    assert load_flight(tmp_path / "DJI_20260905115406_0002_D.OBS").stem == "DJI_20260905115406_0002_D"
+    with pytest.raises(ValueError):
+        load_flight(tmp_path)
+    assert list(group_by_folder(flights)) == [tmp_path]
+    order = plan_order(flights, buffer_minutes=5)
+    single = plan_order(flights[0], buffer_minutes=5)
+    assert order.start_utc == single.start_utc and order.end_utc == single.end_utc  # identical sample spans
+    from ppk.estpos import format_order
+    assert "2 sessions" in format_order(order, flights)
+
+
+def test_merge_summaries():
+    from ppk.cli import merge_summaries
+    s1 = {"rover_obs": "a.OBS", "events": {"mrk": 10, "solved": 10, "unsolved": 0, "fix": 9, "float": 1, "other": 0},
+          "trajectory": {"fix": 90, "total": 100}, "images_missing": 0, "seconds": 5.0, "outputs": {"geo_txt": "a_geo.txt"}}
+    s2 = {"rover_obs": "b.OBS", "events": {"mrk": 5, "solved": 4, "unsolved": 1, "fix": 4, "float": 0, "other": 0},
+          "trajectory": {"fix": 50, "total": 50}, "images_missing": 1, "seconds": 3.0, "outputs": {"geo_txt": "b_geo.txt"}}
+    m = merge_summaries("day", [s1, s2], 13)
+    assert m["events"] == {"mrk": 15, "solved": 14, "unsolved": 1, "fix": 13, "float": 1, "other": 0}
+    assert m["trajectory_fix_ratio"] == round(140 / 150, 4) and m["geo_txt_rows"] == 13 and m["sessions"] == ["a.OBS", "b.OBS"]
+
+
+def test_plan_orders_splits_at_session_gaps(tmp_path, monkeypatch):
+    import shutil
+    from ppk import estpos
+    from ppk.discover import load_flights
+    for stem in ("DJI_20260905113447_0002_D", "DJI_20260905115406_0002_D", "DJI_20260905150000_0002_D"):
+        shutil.copy(FIX / "sample.obs", tmp_path / f"{stem}.OBS")
+        shutil.copy(FIX / "sample.MRK", tmp_path / f"{stem}.MRK")
+        (tmp_path / f"{stem}.NAV").write_text("")
+    flights = load_flights(tmp_path)
+    # pretend the three sessions were observed 08:34-08:45, 08:54-09:05 and 12:00-12:20 GPST
+    spans = {"DJI_20260905113447_0002_D": (datetime(2026, 9, 5, 8, 34), datetime(2026, 9, 5, 8, 45)),
+             "DJI_20260905115406_0002_D": (datetime(2026, 9, 5, 8, 54), datetime(2026, 9, 5, 9, 5)),
+             "DJI_20260905150000_0002_D": (datetime(2026, 9, 5, 12, 0), datetime(2026, 9, 5, 12, 20))}
+    monkeypatch.setattr(estpos, "scan_obs_span", lambda path, header=None: (*spans[Path(path).stem], 1))
+    orders = estpos.plan_orders(flights, buffer_minutes=5, max_hours=2.0)
+    assert [len(f) for _, f in orders] == [2, 1]
+    assert orders[0][0].start_utc == datetime(2026, 9, 5, 8, 15) and orders[0][0].end_utc == datetime(2026, 9, 5, 9, 15)
+    assert orders[1][0].start_utc == datetime(2026, 9, 5, 11, 45) and orders[1][0].end_utc == datetime(2026, 9, 5, 12, 30)
+    assert len(estpos.plan_orders(flights, buffer_minutes=5, max_hours=24)) == 1

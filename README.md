@@ -140,10 +140,14 @@ decimetres); the scatter is dominated by the drone's motion between the RTK epoc
 with a short table (`accuracy.txt`) giving the typical and worst photo position error as flown and RTKLIB's estimate
 after PPK, horizontal and vertical, in centimetres.
 
-A folder may hold several flight sessions (DJI restarts the photo index at 0001 for each one); photos are
-assigned to a session by the capture time in their file name, and `process` then needs the `.OBS` of the
-wanted session as argument. Results are written in place, so process one session per folder or use
-`--no-in-place`.
+**One folder is one project.** A folder may hold several flight sessions (battery swaps, a rain break: DJI
+writes a new OBS/NAV/MRK triplet and restarts the photo index at 0001 each time). `process <folder>` handles
+all of them: photos are assigned to their session by the capture time in the file name, every session is
+processed against the base, and the results are merged into one `geo.txt` / `events.csv` / `summary.json` /
+`accuracy.txt` for the whole folder, with per-session files prefixed by the session stem
+(`<stem>_summary.json`, `<stem>_trajectory.pos`, ...). `estpos-order <folder>` places one Virtual RINEX order
+spanning all sessions plus a 5 min buffer; a day longer than `--max-hours` (default 6) is split into several
+orders at the gaps between sessions. Pass a single `.OBS` to process one session only.
 
 Camera positions apply the DJI `.MRK` lever arm: camera = antenna + N, + E (mm), height − V. This matches
 Emlid Studio (verified to ~1 mm). Image names are the real `DJI_..._NNNN_V.JPG` files matched by the photo index.
