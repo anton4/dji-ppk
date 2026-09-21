@@ -16,7 +16,12 @@ WORKDIR /src
 # or a branch (main, demo5).
 RUN git clone --depth 1 --branch "${RTKLIB_REF}" https://github.com/rtklibexplorer/RTKLIB.git rtklib \
     && git -C rtklib log -1 --format='%H %cd %s' > /src/rtklib_commit.txt
-RUN cmake -S rtklib -B rtklib/build -DCMAKE_BUILD_TYPE=Release \
+# Number of carrier frequency slots compiled into RTKLIB (upstream default 3 = L1+L2+L5). 4 adds the
+# fourth slot (Galileo E6, BeiDou B3I) so pos1-frequency=l1+l2+l5+l6 works instead of being clamped to 3.
+ARG RTKLIB_NFREQ=4
+RUN sed -i "s/-DNFREQ=3/-DNFREQ=${RTKLIB_NFREQ}/" rtklib/CMakeLists.txt \
+    && grep -q "DNFREQ=${RTKLIB_NFREQ}" rtklib/CMakeLists.txt \
+    && cmake -S rtklib -B rtklib/build -DCMAKE_BUILD_TYPE=Release \
     && cmake --build rtklib/build --target rnx2rtkp convbin pos2kml -j"$(nproc)" \
     && ls -la rtklib/bin
 

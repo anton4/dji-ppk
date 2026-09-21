@@ -10,6 +10,7 @@ services:
       context: .
       args:
         RTKLIB_REF: ${RTKLIB_REF:-v2.5.1}
+        RTKLIB_NFREQ: ${RTKLIB_NFREQ:-4}
     image: dji-ppk:${RTKLIB_REF:-v2.5.1}
     environment:
       TZ: Europe/Tallinn
@@ -31,6 +32,7 @@ services:
       context: .
       args:
         RTKLIB_REF: ${RTKLIB_REF:-v2.5.1}
+        RTKLIB_NFREQ: ${RTKLIB_NFREQ:-4}
     command: ["watch", "/data/flights", "--base-dir", "/data/base", "--out-dir", "/data/out"]
     restart: unless-stopped
     environment:
