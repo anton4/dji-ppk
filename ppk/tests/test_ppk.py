@@ -203,3 +203,29 @@ def test_find_nav_files_zip_and_siblings(tmp_path):
     for name in ("virt255g30.26o", "virt255g30.26n", "virt255g30.26l", "other.26n", "virt255g30.26o.bak"):
         (d / name).write_text("x")
     assert [p.name for p in find_nav_files(d / "virt255g30.26o", tmp_path / "w2")] == ["virt255g30.26l", "virt255g30.26n"]
+
+
+def test_solution_quality_report():
+    from ppk.outputs import solution_quality, format_quality
+    ev = read_pos(FIX / "sample_events.pos")
+    mrk = parse_mrk(FIX / "sample.MRK")
+    matched, _ = match_events(mrk, ev.rows, {})
+    traj = read_pos(FIX / "sample.pos")
+    q = solution_quality(matched, len(mrk), traj.rows)
+    assert q["photos"]["fixed"] == 5 and q["photos"]["unsolved"] == 0
+    assert q["trajectory"]["epochs"] == 12 and q["satellites"]["min"] >= 1
+    assert q["std_mm"]["up"]["median"] > q["std_mm"]["north"]["median"] > 0
+    text = format_quality(q, "flight", "base.26o", 0.13, None)
+    assert "5/5 fixed (100.0 %)" in text and "baseline 0.13 km" in text and "none (no Emlid" in text
+
+
+def test_rtk_vs_ppk_statistics():
+    from ppk.outputs import rtk_vs_ppk, format_rtk_vs_ppk
+    ev = read_pos(FIX / "sample_events.pos")
+    mrk = parse_mrk(FIX / "sample.MRK")
+    matched, _ = match_events(mrk, ev.rows, {})
+    r = rtk_vs_ppk(matched)
+    assert r["n"] == 5 and r["mrk_q"] == {"fixed": 5}
+    assert abs(r["north"]["mean_mm"]) < 200 and r["north"]["std_mm"] < 50  # same flight, RTK and PPK agree to cm
+    text = format_rtk_vs_ppk(r)
+    assert "compared photos: 5" in text and "RTK base offset" in text

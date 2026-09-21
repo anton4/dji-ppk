@@ -97,9 +97,14 @@ Drop a new flight folder and its base RINEX under `FLIGHTS_DIR` and the watcher 
 | `events.csv` | per photo: image, GPST, camera lat/lon/h, Q, satellites, std, ratio, antenna lat/lon/h, MRK offsets, DJI RTK position |
 | `<obs>_trajectory.pos` | full 5 Hz RTKLIB trajectory (antenna) |
 | `<obs>_trajectory_events.pos` | RTKLIB solutions at the exposure times (antenna) |
-| `summary.json` | counts, fix ratios, inputs, versions, comparison statistics |
+| `summary.json` | counts, fix ratios, inputs, versions, RTKLIB standard deviations, on-board RTK vs PPK offset, comparison statistics |
 | `compare_report.txt` | comparison with the best reference `*_events*.pos` found in the flight folder |
 | `rtklib.log`, `rtklib_used.conf` | exact command, messages and options used |
+
+After each run two reports are printed: the solution quality (fix counts, satellites, RTKLIB's estimated standard
+deviations, ambiguity ratio) and the drone's on-board RTK positions from the `.MRK` compared with the PPK result.
+The mean of that difference is the position error of the on-board RTK base (e.g. a PPP-surveyed D-RTK 3, usually
+decimetres); the scatter is dominated by the drone's motion between the RTK epoch and the exposure.
 
 Camera positions apply the DJI `.MRK` lever arm: camera = antenna + N, + E (mm), height − V. This matches
 Emlid Studio (verified to ~1 mm). Image names are the real `DJI_..._NNNN_V.JPG` files matched by the photo index.

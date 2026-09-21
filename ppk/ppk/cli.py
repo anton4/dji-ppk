@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import shutil
 import sys
 import time
@@ -15,7 +16,7 @@ from .discover import Flight, load_flight
 from .estpos import check_base, format_order, plan_order
 from .events import write_obs_with_events
 from .mrk import parse_mrk
-from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_summary
+from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_summary, solution_quality, format_quality, rtk_vs_ppk, format_rtk_vs_ppk
 from .pos import read_pos
 from .rinex import prepare_obs, read_header, scan_obs_span, find_base_candidates, find_nav_files, stale_nav_systems
 from .rtklib import rtklib_version, run_rnx2rtkp, write_conf
@@ -151,15 +152,27 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     log.info("events: %d fixed, %d float, %d other, %d unsolved of %d; trajectory fix ratio %.1f%%",
              ev["fix"], ev["float"], ev["other"], ev["unsolved"], len(mrk), 100 * traj.fix_ratio)
 
+    quality = solution_quality(matched, len(mrk), traj.rows)
+    summary["quality"] = quality
+    baseline_km = None
+    for c in checks:
+        m = re.search(r"baseline to flight area ([0-9.]+) km", c.message)
+        if m:
+            baseline_km = float(m.group(1))
     refs = find_reference_events(flight.directory, exclude=res.events_path)
+    print()
+    print(format_quality(quality, flight.name, Path(base).name, baseline_km, refs[-1].name if refs else None))
+    rtk = rtk_vs_ppk(matched)
+    summary["rtk_vs_ppk"] = rtk
+    print(format_rtk_vs_ppk(rtk))
     if refs:
         ref = read_pos(refs[-1])
         cmp_res = compare_events(matched, ref.rows)
         report = format_report(cmp_res, f"ours vs reference {refs[-1].name}")
         (out_dir / "compare_report.txt").write_text(report + "\n")
         summary["compare"] = {"reference": refs[-1].name, **cmp_res.as_dict()}
-        write_summary(out_dir / "summary.json", summary)
         print(report)
+    write_summary(out_dir / "summary.json", summary)
     if not keep_work:
         shutil.rmtree(work, ignore_errors=True)
     return summary
