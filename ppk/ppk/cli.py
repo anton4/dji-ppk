@@ -14,7 +14,7 @@ from pathlib import Path
 from . import __version__
 from .compare import compare_events, format_report, find_reference_events
 from .discover import Flight, load_flight, load_flights
-from .estpos import check_base, format_order, plan_order, plan_orders
+from .estpos import check_base, format_order, plan_order, plan_orders, rinex_days_left, RINEX_RETENTION_DAYS
 from .events import write_obs_with_events
 from .mrk import parse_mrk
 from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_summary, solution_quality, format_quality, rtk_vs_ppk, format_rtk_vs_ppk, format_in_short
@@ -311,6 +311,13 @@ def cmd_estpos_order(a: argparse.Namespace) -> int:
             return 0
     orders = plan_orders(flights, a.buffer, a.height, a.max_hours)
     _print_orders(orders)
+    left = min(rinex_days_left(o.flight_first_gpst) for o, _f in orders)
+    if left < 0:
+        log.error("this flight is %d days past ESTPOS's %d-day RINEX retention: no Virtual RINEX can be ordered for it any more",
+                  -left, RINEX_RETENTION_DAYS)
+        return 2
+    if left <= 7:
+        log.warning("only %d day(s) left before ESTPOS drops the RINEX data for this flight", left)
     base_project = (a.project or flight.name)
     if len(orders) > 1:
         base_project = base_project[:28]

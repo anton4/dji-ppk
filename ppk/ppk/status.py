@@ -9,11 +9,13 @@ from pathlib import Path
 
 from .discover import Flight, find_flights, group_by_folder
 from .mrk import parse_mrk
+from .estpos import rinex_days_left, RINEX_RETENTION_DAYS
 from .rinex import read_header, scan_obs_span
 from .timeutil import span_local
 from .watch import resolve_base
 
-NEXT_ORDER, NEXT_PHOTOS, NEXT_PROCESS, NEXT_REPROCESS, NEXT_DONE = "order", "photos", "process", "reprocess", "done"
+NEXT_ORDER, NEXT_PHOTOS, NEXT_PROCESS, NEXT_REPROCESS, NEXT_DONE, NEXT_EXPIRED = "order", "photos", "process", "reprocess", "done", "expired"
+RETENTION_WARN_DAYS = 14
 
 
 @dataclass
@@ -27,9 +29,13 @@ class FolderStatus:
     base_ok: bool
     result: str
     next: str
+    rinex_days_left: int | None = None
 
     def row(self) -> list[str]:
-        return [self.folder, f"{self.sessions}/{self.photos}", self.flown, self.base, self.result, self.next]  # noqa: E501
+        flown = self.flown
+        if self.rinex_days_left is not None and self.rinex_days_left <= RETENTION_WARN_DAYS:
+            flown += f" ({self.rinex_days_left} d left)" if self.rinex_days_left >= 0 else " (RINEX expired)"
+        return [self.folder, f"{self.sessions}/{self.photos}", flown, self.base, self.result, self.next]
 
 
 def _span(flights: list[Flight]) -> tuple[datetime | None, datetime | None]:
@@ -45,7 +51,7 @@ def _span(flights: list[Flight]) -> tuple[datetime | None, datetime | None]:
     return first, last
 
 
-def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None) -> FolderStatus:
+def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None, now: datetime | None = None) -> FolderStatus:
     flights = sorted(flights, key=lambda f: f.stem)
     photos = sum(len(f.images) for f in flights)
     try:
@@ -90,9 +96,13 @@ def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None)
         result += f"; {expected - photos} of {expected} photos not in the folder yet"
         if nxt in (NEXT_DONE, NEXT_PROCESS):
             nxt = NEXT_PHOTOS  # copy still running? processing now would give a short geo.txt
+    days_left = rinex_days_left(first, now) if first else None
     if not base_ok:
         nxt = NEXT_ORDER
-    return FolderStatus(directory.name, str(directory), len(flights), photos, flown, base, base_ok, result, nxt)
+        if days_left is not None and days_left < 0:
+            nxt = NEXT_EXPIRED
+            base = f"missing, RINEX no longer available ({-days_left} d past the {RINEX_RETENTION_DAYS}-day limit)"
+    return FolderStatus(directory.name, str(directory), len(flights), photos, flown, base, base_ok, result, nxt, days_left)
 
 
 def scan_status(root: Path, base_dir: Path | None) -> list[FolderStatus]:
@@ -112,6 +122,9 @@ def format_status(rows: list[FolderStatus]) -> str:
         out.append("  ".join(str(c).ljust(w) for c, w in zip(row, widths)).rstrip())
         if n == 0:
             out.append("  ".join("-" * w for w in widths))
+    out.append("")
+    out.append(f"ESTPOS provides RINEX for the last {RINEX_RETENTION_DAYS} days only: folders marked 'expired' cannot get a base file "
+               f"any more (unless one is already in the folder); flights within {RETENTION_WARN_DAYS} days of the limit show the days left.")
     return "\n".join(out)
 
 

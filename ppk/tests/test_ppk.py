@@ -417,3 +417,24 @@ def test_find_flights_depth(tmp_path):
     assert [f.directory.name for f in find_flights(tmp_path)] == ["DJI_top"]          # default depth 1
     assert find_flights(tmp_path, recursive=False) == []                                # root only
     assert sorted(f.directory.name for f in find_flights(tmp_path, max_depth=2)) == ["DJI_nested", "DJI_top"]
+
+
+def test_rinex_retention(tmp_path):
+    import shutil
+    from ppk.estpos import rinex_days_left
+    from ppk.discover import load_flights
+    from ppk.status import folder_status
+    first = datetime(2026, 9, 12, 7, 4, 15)  # GPST of the fixture flight
+    assert rinex_days_left(first, now=datetime(2026, 9, 21)) == 81
+    assert rinex_days_left(first, now=datetime(2026, 12, 11)) == 0
+    assert rinex_days_left(first, now=datetime(2026, 12, 15)) == -4
+    d = tmp_path / "DJI_old"; d.mkdir()
+    shutil.copy(FIX / "sample.obs", d / "DJI_a.OBS"); shutil.copy(FIX / "sample.MRK", d / "DJI_a.MRK"); (d / "DJI_a.NAV").write_text("")
+    flights = load_flights(d)
+    st = folder_status(d, flights, None, now=datetime(2026, 12, 15))
+    assert st.next == "expired" and "no longer available" in st.base and "RINEX expired" in st.row()[2]
+    st = folder_status(d, flights, None, now=datetime(2026, 12, 5))
+    assert st.next == "order" and "(6 d left)" in st.row()[2]
+    (d / "base.26o").write_text((FIX / "base_header.26o").read_text() + "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 08 29 59.0000000  0  1\n")
+    st = folder_status(d, flights, None, now=datetime(2026, 12, 15))
+    assert st.next == "photos"  # base present: still processable even though the portal has no data any more

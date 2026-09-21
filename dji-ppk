@@ -51,13 +51,15 @@ table = [head] + [[r["folder"], str(r["sessions"]) + "/" + str(r["photos"]), r["
 w = [max(len(str(x[i])) for x in table) for i in range(len(head))]
 for n, row in enumerate(table):
     print("  ".join(str(c).ljust(k) for c, k in zip(row, w)).rstrip())
-    if n == 0: print("  ".join("-" * k for k in w))' <<< "$STATUS_JSON"
+    if n == 0: print("  ".join("-" * k for k in w))
+exp = [r["folder"] for r in rows if r["next"] == "expired"]
+if exp: print("\nexpired (older than 90 days, ESTPOS has no RINEX for these): " + ", ".join(exp))' <<< "$STATUS_JSON"
 }
 pending_folders() { # names of folders whose next step is not "done"
   python3 -c '
 import json, sys
 for r in json.load(sys.stdin):
-    if r["next"] not in ("done", "photos"):
+    if r["next"] not in ("done", "photos", "expired"):
         print(r["folder"])' <<< "$STATUS_JSON"
 }
 all_folders() {
@@ -101,7 +103,8 @@ menu() {
     echo; echo "${B}Flight folders under FLIGHTS_DIR${N}"
     scan
     render_table
-    echo "${D}next: order = no base file yet, photos = photos still missing in the folder (copy finished?), process/reprocess = run it, done = nothing to do${N}"
+    echo "${D}next: order = no base file yet, photos = photos still missing in the folder (copy finished?), process/reprocess = run it,${N}"
+    echo "${D}      done = nothing to do, expired = older than 90 days, ESTPOS has no RINEX for it any more (only a base file already in the folder helps)${N}"
     echo
     local -a names nexts
     names=(); nexts=()
