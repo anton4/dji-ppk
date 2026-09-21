@@ -150,3 +150,11 @@ def test_plan_order(tmp_path):
     assert order.lat == pytest.approx(58.4041, abs=1e-3)
     assert order.height == pytest.approx(min(e.ellh for e in parse_mrk(fl.mrk)) - 50)
     assert order.start_local.hour == 9  # EEST = UTC+3
+
+
+def test_out_dir_in_place(tmp_path):
+    from ppk.cli import _out_dir_for
+    from ppk.discover import Flight
+    fl = Flight(tmp_path / "flight", tmp_path / "flight/DJI_x.OBS", tmp_path / "flight/DJI_x.NAV", tmp_path / "flight/DJI_x.MRK", {})
+    assert _out_dir_for(Path("/data/out"), fl) == Path("/data/out/flight")
+    assert _out_dir_for(Path("/data/out"), fl, in_place=True) == tmp_path / "flight"
