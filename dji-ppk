@@ -472,7 +472,7 @@ def _table_lines(rows: list[dict], ticked: list[bool], cursor: int, width: int) 
     head = ["", "folder", "sessions/photos", "flown", "base", "status", "accuracy flown→PPK"]
     data = []
     for r, t in zip(rows, ticked):
-        status = r["result"] if r["next"] in ("done", "reprocess") else {"order": "needs RINEX + processing", "process": "needs processing",
+        status = r["result"] if r["next"] in ("done", "reprocess", "photos") else {"order": "needs RINEX + processing", "process": "needs processing",
                                                                          "photos": "waiting for photos", "expired": "expired"}.get(r["next"], r["next"])
         if r["next"] == "reprocess":
             status = "needs reprocessing (inputs changed)"
@@ -503,7 +503,7 @@ def _table_lines(rows: list[dict], ticked: list[bool], cursor: int, width: int) 
             continue
         if row[0] == "[x]":
             cs[0] = "[" + c("x", "green", "bold") + "]"
-        style = NEXT_STYLE.get(r["next"], ())
+        style = ("red", "bold") if "not cm-accurate" in row[5] else NEXT_STYLE.get(r["next"], ())
         cs[5] = c(cs[5].rstrip(), *style) + " " * (widths[5] - len(cs[5].rstrip())) if style else cs[5]
         lines.append("  " + "  ".join(cs))
     return lines

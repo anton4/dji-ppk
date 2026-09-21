@@ -502,3 +502,18 @@ def test_has_nav_files(tmp_path):
     with zipfile.ZipFile(tmp_path / "b.rnx.zip", "w") as zf:
         zf.writestr("virt261o00.26o", "x"); zf.writestr("virt261o00.26n", "x")
     assert has_nav_files(tmp_path / "b.rnx.zip")
+
+
+def test_status_reports_float_photos(tmp_path):
+    import json, shutil
+    from ppk.discover import load_flights
+    from ppk.status import folder_status
+    d = tmp_path / "DJI_f"; d.mkdir()
+    shutil.copy(FIX / "sample.obs", d / "DJI_a.OBS"); shutil.copy(FIX / "sample.MRK", d / "DJI_a.MRK"); (d / "DJI_a.NAV").write_text("")
+    for i in (1, 3, 4, 5, 6):
+        (d / f"DJI_20260912100505_{i:04d}_V.JPG").write_bytes(b"")
+    (d / "base.26o").write_text((FIX / "base_header.26o").read_text() + "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 08 29 59.0000000  0  1\n")
+    (d / "base.26n").write_text("")
+    (d / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 5, "events": {"fix": 3, "mrk": 5, "float": 2, "other": 0, "unsolved": 0}}))
+    st = folder_status(d, load_flights(d), None)
+    assert st.next == "done" and "3/5 fixed, 2 float (not cm-accurate)" in st.result

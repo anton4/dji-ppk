@@ -84,6 +84,11 @@ def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None,
             s = json.loads(summary_path.read_text())
             ev = s.get("events", {})
             result = f"{s.get('geo_txt_rows', '?')} rows in geo.txt, {ev.get('fix', '?')}/{ev.get('mrk', '?')} fixed"
+            weak = (ev.get("float") or 0) + (ev.get("other") or 0) + (ev.get("unsolved") or 0)
+            if weak:
+                parts = [f"{ev['float']} float" if ev.get("float") else "", f"{ev['other']} other" if ev.get("other") else "",
+                         f"{ev['unsolved']} unsolved" if ev.get("unsolved") else ""]
+                result += ", " + ", ".join(p for p in parts if p) + " (not cm-accurate)"
             sessions_done = len(s.get("sessions", [s.get("rover_obs")]))
             rows_then = s.get("geo_txt_rows") or 0
             if summary_path.stat().st_mtime < newest_input or sessions_done != len(flights):
