@@ -1,0 +1,41 @@
+services:
+  # One-shot CLI. Usage:
+  #   docker compose run --rm ppk estpos-window /data/flights/<flight>
+  #   docker compose run --rm ppk check-base /data/base/<file> --flight /data/flights/<flight>
+  #   docker compose run --rm ppk process /data/flights/<flight> --base /data/base/<file>
+  #   docker compose run --rm ppk compare /data/out/<flight> "/data/flights/<flight>/<emlid>_events.pos"
+  ppk:
+    build:
+      context: .
+      args:
+        RTKLIB_REF: ${RTKLIB_REF:-v2.5.1}
+    image: dji-ppk:${RTKLIB_REF:-v2.5.1}
+    environment:
+      TZ: Europe/Tallinn
+      PPK_CONF: /app/config/dji_m4e.conf
+      PPK_ANTEX: /app/antex/igs20.atx
+    volumes:
+      - ${FLIGHTS_DIR:-.}:/data/flights:ro
+      - ${BASE_DIR:-./data/base}:/data/base:ro
+      - ${OUT_DIR:-./data/out}:/data/out
+    profiles: ["cli"]
+
+  # Folder watcher: processes every flight folder under /data/flights once a covering
+  # base RINEX is available (inside the flight folder or under /data/base).
+  ppk-watch:
+    image: dji-ppk:${RTKLIB_REF:-v2.5.1}
+    build:
+      context: .
+      args:
+        RTKLIB_REF: ${RTKLIB_REF:-v2.5.1}
+    command: ["watch", "/data/flights", "--base-dir", "/data/base", "--out-dir", "/data/out"]
+    restart: unless-stopped
+    environment:
+      TZ: Europe/Tallinn
+      PPK_CONF: /app/config/dji_m4e.conf
+      PPK_ANTEX: /app/antex/igs20.atx
+      PPK_POLL_SECONDS: ${PPK_POLL_SECONDS:-30}
+    volumes:
+      - ${FLIGHTS_DIR:-.}:/data/flights:ro
+      - ${BASE_DIR:-./data/base}:/data/base:ro
+      - ${OUT_DIR:-./data/out}:/data/out
