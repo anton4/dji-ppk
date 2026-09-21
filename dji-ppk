@@ -12,6 +12,8 @@
   ./dji-ppk build               (re)build both images
 
 <folder> is a folder name under FLIGHTS_DIR (see .env) or any path to it. Only python3 and docker compose are needed.
+On every start the launcher fetches the git remote, pulls a newer version (clean tree, fast-forward only) and re-runs
+itself, then rebuilds an image that is older than the code before using it. --no-update or DJI_PPK_NO_UPDATE=1 skips that.
 """
 from __future__ import annotations
 
@@ -41,6 +43,49 @@ def c(text: str, *styles: str) -> str:
 def die(msg: str, code: int = 1) -> None:
     print(c("error: ", "red", "bold") + msg, file=sys.stderr)
     sys.exit(code)
+
+
+# ----------------------------------------------------------------------------- self-update
+
+def _git(*args: str, timeout: int = 30) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], capture_output=True, text=True, timeout=timeout, cwd=ROOT)
+
+
+def self_update(argv: list[str]) -> None:
+    """git fetch; if the remote branch is ahead and the working tree is clean, git pull --ff-only and re-run this
+    command with the new code. Anything unusual (offline, local edits, diverged) is reported and skipped."""
+    if os.environ.get("DJI_PPK_NO_UPDATE") or not (ROOT / ".git").exists():
+        return
+    try:
+        if _git("rev-parse", "--abbrev-ref", "@{u}").returncode != 0:
+            return  # no upstream configured
+        fetch = _git("fetch", "--quiet", timeout=40)
+        if fetch.returncode != 0:
+            print(c("update check skipped: git fetch failed (offline?)", "dim"), file=sys.stderr)
+            return
+        local = _git("rev-parse", "HEAD").stdout.strip()
+        remote = _git("rev-parse", "@{u}").stdout.strip()
+        if local == remote:
+            return
+        base = _git("merge-base", "HEAD", "@{u}").stdout.strip()
+        if base != local:
+            print(c("update skipped: local commits differ from the remote (git status / git pull by hand)", "yellow"), file=sys.stderr)
+            return
+        if _git("status", "--porcelain", "--untracked-files=no").stdout.strip():
+            print(c("update skipped: you have local changes; commit or stash them, then run again", "yellow"), file=sys.stderr)
+            return
+        n = _git("rev-list", "--count", "HEAD..@{u}").stdout.strip()
+        print(c(f"new version available ({n} commit{'s' if n != '1' else ''}); updating ...", "cyan", "bold"), file=sys.stderr)
+        pull = _git("pull", "--ff-only", "--quiet", timeout=120)
+        if pull.returncode != 0:
+            print(c("update failed: " + (pull.stderr or pull.stdout).strip(), "red"), file=sys.stderr)
+            return
+        print(c("updated to " + _git("log", "-1", "--format=%h %s").stdout.strip(), "green"), file=sys.stderr)
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        print(c(f"update check skipped: {exc}", "dim"), file=sys.stderr)
+        return
+    os.environ["DJI_PPK_NO_UPDATE"] = "1"
+    os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *argv])  # run the new launcher
 
 
 # ----------------------------------------------------------------------------- environment
@@ -111,16 +156,20 @@ def ensure_images(env: dict[str, str], estpos: bool = False) -> None:
     checks = [("ppk", tag, ["ppk", "config", "Dockerfile"])]
     if estpos:
         checks.append(("ppk-estpos", "dji-ppk-estpos", ["ppk", "Dockerfile.estpos"]))
+    stale = []
     for service, image, sources in checks:
         created = image_created(image)
         if created is None:
             need.append(service)
         elif created < newest_source(sources) and service not in _STALE_WARNED:
             _STALE_WARNED.add(service)
-            print(c(f"note: image {image} is older than the code (git pull?). Run ./dji-ppk build to update it.", "yellow"), file=sys.stderr)
+            stale.append(service)
     if need:
         print(c(f"image(s) not built yet: {' '.join(need)}. Building now (first run compiles RTKLIB, several minutes) ...", "yellow"))
-        if compose("build", *need).returncode != 0:
+    if stale:
+        print(c(f"image(s) older than the code: {' '.join(stale)}. Rebuilding (usually well under a minute) ...", "cyan"))
+    if need or stale:
+        if compose("build", *need, *stale).returncode != 0:
             die("image build failed")
 
 
@@ -579,6 +628,10 @@ def main(argv: list[str]) -> int:
     known = {"status", "run", "order", "download", "process", "window", "dry-run", "watch", "build", "-h", "--help"}
     if argv and argv[0] not in known and not argv[0].startswith("-"):
         argv = ["run", *argv]  # ./dji-ppk <folder> ... = run: the default is to do everything
+    if "--no-update" in argv:
+        argv = [x for x in argv if x != "--no-update"]
+    elif not argv or argv[0] not in ("-h", "--help"):
+        self_update(argv)  # pulls a newer version and re-runs itself; images are rebuilt on first use when stale
     a = ap.parse_args(argv)
 
     if a.cmd is None:
