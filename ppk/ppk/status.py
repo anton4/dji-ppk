@@ -8,11 +8,12 @@ from datetime import datetime
 from pathlib import Path
 
 from .discover import Flight, find_flights, group_by_folder
+from .mrk import parse_mrk
 from .rinex import read_header, scan_obs_span
 from .timeutil import span_local
 from .watch import resolve_base
 
-NEXT_ORDER, NEXT_PROCESS, NEXT_REPROCESS, NEXT_DONE = "order", "process", "reprocess", "done"
+NEXT_ORDER, NEXT_PHOTOS, NEXT_PROCESS, NEXT_REPROCESS, NEXT_DONE = "order", "photos", "process", "reprocess", "done"
 
 
 @dataclass
@@ -28,7 +29,7 @@ class FolderStatus:
     next: str
 
     def row(self) -> list[str]:
-        return [self.folder, f"{self.sessions}/{self.photos}", self.flown, self.base, self.result, self.next]
+        return [self.folder, f"{self.sessions}/{self.photos}", self.flown, self.base, self.result, self.next]  # noqa: E501
 
 
 def _span(flights: list[Flight]) -> tuple[datetime | None, datetime | None]:
@@ -47,6 +48,10 @@ def _span(flights: list[Flight]) -> tuple[datetime | None, datetime | None]:
 def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None) -> FolderStatus:
     flights = sorted(flights, key=lambda f: f.stem)
     photos = sum(len(f.images) for f in flights)
+    try:
+        expected = sum(len(parse_mrk(f.mrk)) for f in flights)  # one camera event per photo
+    except Exception:  # noqa: BLE001
+        expected = photos
     first, last = _span(flights)
     flown = span_local(first, last) if first and last else "?"
 
@@ -70,13 +75,21 @@ def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None)
             ev = s.get("events", {})
             result = f"{s.get('geo_txt_rows', '?')} rows in geo.txt, {ev.get('fix', '?')}/{ev.get('mrk', '?')} fixed"
             sessions_done = len(s.get("sessions", [s.get("rover_obs")]))
+            rows_then = s.get("geo_txt_rows") or 0
             if summary_path.stat().st_mtime < newest_input or sessions_done != len(flights):
                 result += " (outdated)"
+                nxt = NEXT_REPROCESS
+            elif photos > rows_then:
+                result += f" (photos arrived since: {photos} present)"
                 nxt = NEXT_REPROCESS
             else:
                 nxt = NEXT_DONE
         except (OSError, ValueError):
             result, nxt = "summary.json unreadable", NEXT_REPROCESS
+    if photos < expected:
+        result += f"; {expected - photos} of {expected} photos not in the folder yet"
+        if nxt in (NEXT_DONE, NEXT_PROCESS):
+            nxt = NEXT_PHOTOS  # copy still running? processing now would give a short geo.txt
     if not base_ok:
         nxt = NEXT_ORDER
     return FolderStatus(directory.name, str(directory), len(flights), photos, flown, base, base_ok, result, nxt)

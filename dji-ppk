@@ -57,7 +57,7 @@ pending_folders() { # names of folders whose next step is not "done"
   python3 -c '
 import json, sys
 for r in json.load(sys.stdin):
-    if r["next"] != "done":
+    if r["next"] not in ("done", "photos"):
         print(r["folder"])' <<< "$STATUS_JSON"
 }
 all_folders() {
@@ -101,6 +101,7 @@ menu() {
     echo; echo "${B}Flight folders under FLIGHTS_DIR${N}"
     scan
     render_table
+    echo "${D}next: order = no base file yet, photos = photos still missing in the folder (copy finished?), process/reprocess = run it, done = nothing to do${N}"
     echo
     local -a names nexts
     names=(); nexts=()

@@ -380,9 +380,11 @@ def test_folder_status_next_step(tmp_path):
     from ppk.status import folder_status, format_status
     d = tmp_path / "DJI_x"; d.mkdir()
     shutil.copy(FIX / "sample.obs", d / "DJI_a.OBS"); shutil.copy(FIX / "sample.MRK", d / "DJI_a.MRK"); (d / "DJI_a.NAV").write_text("")
+    for i in (1, 3, 4, 5, 6):  # the five MRK events, photo names inside the session's local time window (10:05 EEST)
+        (d / f"DJI_20260912100505_{i:04d}_V.JPG").write_bytes(b"")
     flights = load_flights(d)
     st = folder_status(d, flights, None)
-    assert st.next == "order" and st.base == "missing" and st.sessions == 1
+    assert st.next == "order" and st.base == "missing" and st.sessions == 1 and st.photos == 5
     # a base header that covers the sample span (07:04-07:24 GPST on 2026-09-12 -> the fixture base spans 06:30-08:29)
     base = d / "base.26o"
     hdr = (FIX / "base_header.26o").read_text()
@@ -395,6 +397,13 @@ def test_folder_status_next_step(tmp_path):
     time.sleep(0.01); os.utime(d / "DJI_a.MRK", None)  # input newer than the result
     st = folder_status(d, flights, None)
     assert st.next == "reprocess" and "outdated" in st.result
+    (d / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 3, "events": {"fix": 5, "mrk": 5}}))
+    st = folder_status(d, flights, None)
+    assert st.next == "reprocess" and "photos arrived" in st.result  # processed with 3 photos, 5 are here now
+    (d / "DJI_20260912100505_0006_V.JPG").unlink()
+    (d / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 4, "events": {"fix": 5, "mrk": 5}}))
+    st = folder_status(d, load_flights(d), None)
+    assert st.next == "photos" and "1 of 5 photos not in the folder yet" in st.result
     assert "DJI_x" in format_status([st])
 
 
