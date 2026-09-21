@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """dji-ppk: one entry point for the whole flow. Runs on the host and drives the two containers.
 
-  ./dji-ppk                     interactive menu: status table, tick folders, apply run / download / order / process
+  ./dji-ppk                     interactive menu: arrow keys to move, Space to tick, Enter to pick an action
   ./dji-ppk status              one line per flight folder: sessions, photos, base, result, next step (--json)
   ./dji-ppk run <folder>...     order the Virtual RINEX if needed, then process (geo.txt & co in the folder)
   ./dji-ppk run --all           the same for every folder whose next step is order / process / reprocess
@@ -109,8 +109,9 @@ def cpath(folder: str) -> str:
 
 # ----------------------------------------------------------------------------- status
 
-def status_rows(env: dict[str, str]) -> list[dict]:
-    print(c(f"scanning {env.get('FLIGHTS_DIR', '.')} ...", "dim"), file=sys.stderr, flush=True)
+def status_rows(env: dict[str, str], quiet: bool = False) -> list[dict]:
+    if not quiet:
+        print(c(f"scanning {env.get('FLIGHTS_DIR', '.')} ...", "dim"), file=sys.stderr, flush=True)
     r = run_in("ppk", env, "status", FLIGHTS, "--json", capture=True)
     if r.returncode != 0:
         die("cannot list flights:\n" + (r.stderr or r.stdout))
@@ -238,7 +239,7 @@ def parse_toggles(text: str, n: int) -> list[int] | None:
     return idx
 
 
-def menu(env: dict[str, str]) -> None:
+def menu_text(env: dict[str, str]) -> None:
     rows = status_rows(env)
     ticked = [r["next"] in PENDING for r in rows]
 
@@ -302,6 +303,201 @@ def menu(env: dict[str, str]) -> None:
                 continue
             for i in toggles:
                 ticked[i] = not ticked[i]
+
+
+# ----------------------------------------------------------------------------- arrow-key menu (pure python, ANSI)
+
+ACTIONS = [("r", "run: order the base if needed, then process"),
+           ("d", "download the base only (order already on the portal, never orders)"),
+           ("o", "order the base only"),
+           ("p", "process only"),
+           ("w", "show the order parameters")]
+ACTION_FN = {"r": act_run, "d": act_download, "o": act_order, "p": act_process, "w": act_window}
+
+
+def read_key() -> str:
+    """One key press from the terminal: 'UP', 'DOWN', 'ENTER', 'SPACE', 'ESC' or the character itself."""
+    import select
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        ch = os.read(fd, 1)
+        if ch == b"\x1b":
+            seq = b""
+            while select.select([fd], [], [], 0.05)[0] and len(seq) < 6:
+                seq += os.read(fd, 1)
+                if seq[-1:].isalpha() or seq.endswith(b"~"):
+                    break
+            return {b"[A": "UP", b"[B": "DOWN", b"OA": "UP", b"OB": "DOWN", b"[C": "RIGHT", b"[D": "LEFT"}.get(seq, "ESC")
+        if ch in (b"\r", b"\n"):
+            return "ENTER"
+        if ch == b" ":
+            return "SPACE"
+        if ch in (b"\x03", b"\x04"):  # Ctrl-C / Ctrl-D
+            return "q"
+        return ch.decode("utf-8", "ignore")
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _term_width() -> int:
+    try:
+        return os.get_terminal_size().columns
+    except OSError:
+        return 120
+
+
+def _table_lines(rows: list[dict], ticked: list[bool], cursor: int, width: int) -> list[str]:
+    head = ["", "folder", "sess/photos", "flown", "base", "result", "next"]
+    data = [["[x]" if t else "[ ]", r["folder"], f"{r['sessions']}/{r['photos']}", r["flown"], r["base"], r["result"], r["next"]]
+            for r, t in zip(rows, ticked)]
+    widths = [max(len(str(x[i])) for x in [head] + data) for i in range(len(head))]
+    fixed = sum(widths) - widths[5] + 2 * (len(head) - 1) + 2
+    widths[5] = max(12, min(widths[5], width - fixed))  # the result column absorbs the terminal width
+
+    def cells(row):
+        out = []
+        for i, v in enumerate(row):
+            v = str(v)
+            if len(v) > widths[i]:
+                v = v[: widths[i] - 1] + "…"
+            out.append(v.ljust(widths[i]))
+        return out
+
+    lines = ["  " + c("  ".join(cells(head)), "bold")]
+    for i, row in enumerate(data):
+        cs = cells(row)
+        if row[0] == "[x]":
+            cs[0] = "[" + c("x", "green", "bold") + "]"
+        if row[-1] in NEXT_STYLE:
+            cs[-1] = c(cs[-1].rstrip(), *NEXT_STYLE[row[-1]]) + " " * (widths[-1] - len(cs[-1].rstrip()))
+        line = "  ".join(cs)
+        if i == cursor:
+            line = c("› ", "bold", "cyan") + ("\033[7m" + re.sub(r"\033\[[0-9;]*m", "", "  ".join(cells(row))) + "\033[0m" if COLOR else "  ".join(cells(row)))
+        else:
+            line = "  " + line
+        lines.append(line)
+    return lines
+
+
+def _draw(rows, ticked, cursor, msg: str, popup: int | None) -> None:
+    width = _term_width()
+    sys.stdout.write("\033[2J\033[H")
+    print(c("dji-ppk", "bold", "magenta") + "  " + c("Flight folders under FLIGHTS_DIR", "bold"))
+    print()
+    if not rows:
+        print("no flight folders (OBS/NAV/MRK triplets) found under FLIGHTS_DIR")
+    else:
+        print("\n".join(_table_lines(rows, ticked, cursor, width)))
+    print()
+    if popup is not None:
+        n = sum(ticked) or 1
+        print(c(f"Action for {n} folder{'s' if n > 1 else ''} (↑↓ Enter, Esc = back):", "bold"))
+        for i, (key, label) in enumerate(ACTIONS):
+            marker = c("› ", "bold", "cyan") if i == popup else "  "
+            text = f"{key}  {label}"
+            print(marker + (("\033[7m" + text + "\033[0m") if (i == popup and COLOR) else text))
+    else:
+        print(c("↑↓", "bold") + " move   " + c("Space", "bold") + " tick   " + c("Enter", "bold") + " action for ticked   "
+              + c("a", "bold") + " all pending   " + c("A", "bold") + " all   " + c("n", "bold") + " none")
+        print(c("r", "bold") + " run   " + c("d", "bold") + " download   " + c("o", "bold") + " order   " + c("p", "bold")
+              + " process   " + c("w", "bold") + " order parameters   " + c("s", "bold") + " rescan   " + c("W", "bold")
+              + " watcher   " + c("q", "bold") + " quit")
+        print(c(legend(), "dim") if not COLOR else legend())
+    if msg:
+        print()
+        print(c(msg, "yellow"))
+    sys.stdout.flush()
+
+
+def menu(env: dict[str, str]) -> None:
+    """Arrow-key menu; falls back to the typed menu when there is no terminal (pipes) or on Windows."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return menu_text(env)
+    try:
+        import termios  # noqa: F401
+    except ImportError:
+        return menu_text(env)
+    rows = status_rows(env)
+    ticked = [r["next"] in PENDING for r in rows]
+    cursor, popup, msg = 0, None, ""
+
+    def rescan():
+        nonlocal rows, ticked, cursor
+        rows = status_rows(env)
+        ticked = [r["next"] in PENDING for r in rows]
+        cursor = min(cursor, max(0, len(rows) - 1))
+
+    def run_action(key: str) -> None:
+        folders = [r["folder"] for r, t in zip(rows, ticked) if t] or ([rows[cursor]["folder"]] if rows else [])
+        sys.stdout.write("\033[2J\033[H")
+        for f in folders:
+            banner(f)
+            if ACTION_FN[key](env, f) != 0:
+                print(c(f"✘ {f} failed", "red", "bold"))
+        try:
+            input(c("\nPress Enter to return to the menu ...", "dim"))
+        except (EOFError, KeyboardInterrupt):
+            pass
+        if key != "w":
+            rescan()
+
+    while True:
+        _draw(rows, ticked, cursor, msg, popup)
+        msg = ""
+        k = read_key()
+        if popup is not None:
+            if k == "UP":
+                popup = (popup - 1) % len(ACTIONS)
+            elif k == "DOWN":
+                popup = (popup + 1) % len(ACTIONS)
+            elif k == "ENTER":
+                key, popup = ACTIONS[popup][0], None
+                run_action(key)
+            elif k in ("ESC", "q"):
+                popup = None
+            elif k in ACTION_FN:
+                popup = None
+                run_action(k)
+            continue
+        if k in ("q", "ESC"):
+            sys.stdout.write("\033[2J\033[H")
+            return
+        if not rows:
+            if k == "s":
+                rescan()
+            continue
+        if k == "UP":
+            cursor = (cursor - 1) % len(rows)
+        elif k == "DOWN":
+            cursor = (cursor + 1) % len(rows)
+        elif k == "SPACE":
+            ticked[cursor] = not ticked[cursor]
+        elif k == "a":
+            ticked = [r["next"] in PENDING for r in rows]
+        elif k == "A":
+            ticked = [True] * len(rows)
+        elif k in ("n", "N"):
+            ticked = [False] * len(rows)
+        elif k == "s":
+            rescan()
+        elif k == "W":
+            sys.stdout.write("\033[2J\033[H")
+            act_watch(env)
+            rescan()
+        elif k == "ENTER":
+            popup = 0
+        elif k in ACTION_FN:
+            run_action(k)
+        elif k.isdigit():
+            i = int(k) - 1
+            if 0 <= i < len(rows):
+                ticked[i] = not ticked[i]
+            else:
+                msg = f"no folder {k}"
 
 
 # ----------------------------------------------------------------------------- main
