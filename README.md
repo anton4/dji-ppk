@@ -3,8 +3,10 @@
 Docker Compose service that post-processes DJI RTK drone flights (tested with a Matrice 4E) against
 ESTPOS base station data and produces camera positions for photogrammetry (WebODM `geo.txt`).
 
-ESTPOS is the Estonian national GNSS reference station network run by the Land Board (Maa-amet); its portal
-delivers Virtual RINEX files, base station observations computed for any point you choose, which this tool uses
+[ESTPOS](https://geoportaal.maaamet.ee/est/ruumiandmed/estpos-riiklik-gnss-satelliitandmete-keskus-p838.html) is the
+Estonian national GNSS reference station network run by the Land Board (Maa-amet); its portal
+(https://gnss-rtk.maaamet.ee/sbc, free account) delivers Virtual RINEX files, base station observations computed
+for any point you choose, which this tool uses
 as the base for post-processed kinematic (PPK) correction of the drone's positions, replacing an on-site base or
 a real-time RTK link.
 
