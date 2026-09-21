@@ -1,0 +1,14 @@
+# local configuration
+.env
+
+# flight data, base RINEX and results live outside the repo
+DJI_*/
+data/
+*.trace
+
+# python / editor
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.DS_Store

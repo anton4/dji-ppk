@@ -1,0 +1,15 @@
+DJI_*/
+data/
+*.trace
+*.OBS
+*.obs
+*.JPG
+*.jpg
+*.pos
+*.png
+*.RTK
+.DS_Store
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
