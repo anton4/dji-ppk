@@ -30,8 +30,8 @@ ensure_images() { # build missing images with visible progress; a silent auto-bu
   fi
 }
 # -T: no pseudo-TTY, stdin from /dev/null: the containers must never swallow the keystrokes of the menu
-ppk() { ensure_images; compose run --rm -T --no-build ppk "$@" </dev/null; }
-estpos() { ensure_images estpos; compose run --rm -T --no-build ppk-estpos "$@" </dev/null; }
+ppk() { ensure_images; compose run --rm -T ppk "$@" </dev/null; }
+estpos() { ensure_images estpos; compose run --rm -T ppk-estpos "$@" </dev/null; }
 
 need_env() {
   [[ -f .env ]] || die ".env is missing: cp .env.example .env and set FLIGHTS_DIR (and ESTPOS_USER / ESTPOS_PASSWORD for ordering)"
