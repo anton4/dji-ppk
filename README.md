@@ -101,8 +101,10 @@ Without `--base` the first RINEX file inside the flight folder or under `/data/b
 4. presses *Esita*, polls *Tulemused -> Virtuaalse RINEX-i andmed* until the entry with that project name is
    ready (usually a few minutes), downloads the zip into the flight folder and validates it with `check-base`.
 
-The portal truncates project names to 30 characters and asks for a confirmation (`Kinnita`) after `Esita`; both
-are handled. Options: `--dry-run` (fill, verify, save `estpos_order_form.png`, do not submit), `--no-wait` and later
+Nothing is ordered twice: when a base file in the folder already covers every session the command stops
+(`--force` overrides), and when the portal already lists an order with the same project name, start and length
+it is downloaded instead of re-ordered. The portal truncates project names to 30 characters and asks for a
+confirmation (`Kinnita`) after `Esita`; both are handled. Options: `--dry-run` (fill, verify, save `estpos_order_form.png`, do not submit), `--no-wait` and later
 `ppk estpos-download <flight> --project <name>`, `--project`, `--rate`, `--timeout`, `--no-send-height`.
 The portal keeps results for 14 days and raw data for 90 days. The Virtual RINEX service is free on ESTPOS
 accounts, but every run places a real order, so the watcher does not order on its own.

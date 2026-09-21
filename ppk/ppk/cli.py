@@ -301,6 +301,14 @@ def cmd_estpos_order(a: argparse.Namespace) -> int:
                          "docker compose --profile cli run --rm ppk-estpos estpos-order <flight>")
     flights = load_flights(_flight_path(a.flight))
     flight = flights[0]
+    if not a.force:
+        have = resolve_bases(flights, None, DEFAULT_BASE_DIR)
+        if all(have):
+            names = sorted({b.name for b in have})
+            print(f"{flight.name}: base file{'s' if len(names) > 1 else ''} {', '.join(names)} already cover"
+                  f"{'s' if len(names) == 1 else ''} all {len(flights)} session{'s' if len(flights) > 1 else ''}; nothing to order.")
+            print(f"Run: ppk process {flight.directory}   (use --force to order anyway)")
+            return 0
     orders = plan_orders(flights, a.buffer, a.height, a.max_hours)
     _print_orders(orders)
     base_project = (a.project or flight.name)
@@ -469,6 +477,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-wait", action="store_true", help="submit only; download later with estpos-download")
     s.add_argument("--timeout", type=float, default=60, help="minutes to wait for the portal to prepare the file")
     s.add_argument("--dry-run", action="store_true", help="fill and verify the form, save a screenshot, do not submit")
+    s.add_argument("--force", action="store_true", help="order even if a base file in the folder already covers every session")
     s.add_argument("--screenshot", action="store_true", help="save estpos_order_form.png next to the flight before submitting")
     s.add_argument("--headed", action="store_true", help="show the browser (host only)")
     s.set_defaults(func=cmd_estpos_order)

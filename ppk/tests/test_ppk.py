@@ -360,3 +360,15 @@ def test_plan_orders_splits_at_session_gaps(tmp_path, monkeypatch):
     assert orders[0][0].start_utc == datetime(2026, 9, 5, 8, 15) and orders[0][0].end_utc == datetime(2026, 9, 5, 9, 15)
     assert orders[1][0].start_utc == datetime(2026, 9, 5, 11, 45) and orders[1][0].end_utc == datetime(2026, 9, 5, 12, 30)
     assert len(estpos.plan_orders(flights, buffer_minutes=5, max_hours=24)) == 1
+
+
+def test_find_existing_order():
+    from ppk.estpos import EstposOrder
+    from ppk.estpos_web import ResultEntry, find_existing
+    order = EstposOrder(59.4, 24.7, 45.0, "x", datetime(2026, 9, 5, 8, 34), datetime(2026, 9, 5, 9, 4),
+                        datetime(2026, 9, 5, 8, 15), datetime(2026, 9, 5, 9, 15))
+    same = ResultEntry(datetime(2026, 9, 21, 11, 34), "demo", datetime(2026, 9, 5, 11, 15), 1.0, True, "b1", "")
+    shorter = ResultEntry(datetime(2026, 9, 21, 11, 24), "demo", datetime(2026, 9, 5, 11, 15), 0.75, True, "b2", "")
+    other = ResultEntry(datetime(2026, 9, 21, 11, 24), "other", datetime(2026, 9, 5, 11, 15), 1.0, True, "b3", "")
+    assert find_existing([shorter, other, same], "demo", order) is same
+    assert find_existing([shorter, other], "demo", order) is None

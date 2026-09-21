@@ -295,6 +295,16 @@ def list_results(page) -> list[ResultEntry]:
     return entries
 
 
+def find_existing(entries: list[ResultEntry], project: str, order: EstposOrder) -> ResultEntry | None:
+    """An order already on the portal with the same project name, start time and length (ready or processing)."""
+    hours = order.duration.total_seconds() / 3600
+    start = order.start_local.replace(tzinfo=None)
+    for e in sorted(entries, key=lambda e: e.requested or datetime.min, reverse=True):
+        if e.project == project and e.start_local == start and e.duration_h is not None and abs(e.duration_h - hours) < 0.01:
+            return e
+    return None
+
+
 def find_entry(entries: list[ResultEntry], project: str, since: datetime | None) -> ResultEntry | None:
     cands = [e for e in entries if e.project == project and (since is None or (e.requested and e.requested >= since))]
     cands.sort(key=lambda e: e.requested or datetime.min, reverse=True)
@@ -356,9 +366,17 @@ def order_and_download_many(orders: list[tuple[EstposOrder, str]], dest_dir: Pat
         login(page, user, password)
         since = datetime.now().replace(microsecond=0) - timedelta(minutes=2)
         placed: list[str] = []
+        existing = list_results(page) if not dry_run else []
         for i, (order, project) in enumerate(orders, 1):
             if len(orders) > 1:
                 log.info("--- order %d/%d ---", i, len(orders))
+            short = project[:30]
+            prior = find_existing(existing, short, order)
+            if prior is not None:
+                log.info("the portal already has this order (%r requested %s, %s): not ordering again, downloading it",
+                         short, prior.requested, "ready" if prior.ready else "still processing")
+                placed.append(short)
+                continue
             project = fill_order_form(page, order, project, rate_s, height)["project"]
             if screenshot:
                 shot = screenshot if len(orders) == 1 else screenshot.with_name(f"{screenshot.stem}_{i}{screenshot.suffix}")
@@ -375,7 +393,7 @@ def order_and_download_many(orders: list[tuple[EstposOrder, str]], dest_dir: Pat
             return []
         paths = []
         for project in placed:
-            entry = wait_for_result(page, project, since, timeout_min)
+            entry = wait_for_result(page, project, None, timeout_min)  # newest entry with that project name
             paths.append(download_entry(page, entry, dest_dir))
         return paths
     except Exception:
