@@ -140,7 +140,8 @@ def newest_source(paths: list[str]) -> float:
     """Newest mtime of the files an image is built from; caches and hidden folders do not count."""
     newest = 0.0
     for p in paths:
-        for f in ([Path(p)] if Path(p).is_file() else Path(p).rglob("*")):
+        base = ROOT / p
+        for f in ([base] if base.is_file() else base.rglob("*")):
             rel = f.relative_to(ROOT).parts
             if any(part.startswith(".") or part == "__pycache__" or part.endswith(".egg-info") for part in rel):
                 continue
