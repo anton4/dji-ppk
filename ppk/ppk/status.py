@@ -10,7 +10,7 @@ from pathlib import Path
 from .discover import Flight, find_flights, group_by_folder
 from .mrk import parse_mrk
 from .estpos import rinex_days_left, RINEX_RETENTION_DAYS
-from .rinex import read_header, scan_obs_span
+from .rinex import read_header, scan_obs_span, has_nav_files
 from .timeutil import span_local
 from .watch import resolve_base
 
@@ -65,7 +65,10 @@ def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None,
     bases = [resolve_base(f, base_dir) for f in flights]
     if all(bases):
         names = sorted({b.name for b in bases})
-        base, base_ok = ", ".join(names), True
+        if all(has_nav_files(b) for b in bases):
+            base, base_ok = ", ".join(names), True
+        else:
+            base, base_ok = ", ".join(names) + " (no navigation files: GPS unusable, order the zip)", False
     elif any(bases):
         missing = [f.stem for f, b in zip(flights, bases) if b is None]
         base, base_ok = "partial, missing for " + ", ".join(missing), False

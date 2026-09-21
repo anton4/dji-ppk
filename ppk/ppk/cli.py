@@ -19,7 +19,7 @@ from .events import write_obs_with_events
 from .mrk import parse_mrk
 from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_summary, solution_quality, format_quality, rtk_vs_ppk, format_rtk_vs_ppk, format_in_short
 from .pos import read_pos
-from .rinex import prepare_obs, read_header, scan_obs_span, find_base_candidates, find_nav_files, stale_nav_systems
+from .rinex import prepare_obs, read_header, scan_obs_span, find_base_candidates, find_nav_files, stale_nav_systems, has_nav_files
 from .rtklib import rtklib_version, run_rnx2rtkp, write_conf
 from .timeutil import span_local
 from . import ui
@@ -165,6 +165,11 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     if ev["float"] or ev["other"] or ev["unsolved"]:
         verdict += f"; {ev['float']} float, {ev['other']} other, {ev['unsolved']} unsolved"
     log.info("%s", ui.ok(verdict) if fixed_pct >= 99 else ui.warn(verdict) if fixed_pct >= 95 else ui.bad(verdict))
+    if ev["float"] and not fixed_only:
+        log.warning("%d photos have only a float solution (decimetre-level); they are in geo.txt too. "
+                    "Use --fixed-only to leave them out, or fix the cause: %s", ev["float"],
+                    "the base has no navigation files, so GPS/BeiDou were not used" if not base_navs and stale
+                    else "check sky view / base coverage")
 
     quality = solution_quality(matched, len(mrk), traj.rows)
     summary["quality"] = quality
@@ -320,12 +325,15 @@ def cmd_estpos_order(a: argparse.Namespace) -> int:
     flight = flights[0]
     if not a.force:
         have = resolve_bases(flights, None, DEFAULT_BASE_DIR)
-        if all(have):
+        if all(have) and all(has_nav_files(b) for b in have):
             names = sorted({b.name for b in have})
             print(f"{flight.name}: base file{'s' if len(names) > 1 else ''} {', '.join(names)} already cover"
                   f"{'s' if len(names) == 1 else ''} all {len(flights)} session{'s' if len(flights) > 1 else ''}; nothing to order.")
             print(f"Run: ppk process {flight.directory}   (use --force to order anyway)")
             return 0
+        if all(have):
+            log.warning("%s covers the flight but has no navigation files (GPS unusable with the DJI NAV): ordering the ESTPOS zip",
+                        ", ".join(sorted({b.name for b in have})))
     orders = plan_orders(flights, a.buffer, a.height, a.max_hours)
     _print_orders(orders)
     left = min(rinex_days_left(o.flight_first_gpst) for o, _f in orders)
@@ -374,7 +382,7 @@ def cmd_estpos_download(a: argparse.Namespace) -> int:
     user, pw = _estpos_credentials()
     if not a.force:
         have = resolve_bases(flights, None, DEFAULT_BASE_DIR)
-        if all(have):
+        if all(have) and all(has_nav_files(b) for b in have):
             print(f"{flight.name}: base file {', '.join(sorted({b.name for b in have}))} already covers every session; nothing to download.")
             return 0
     try:

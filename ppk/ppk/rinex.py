@@ -242,6 +242,24 @@ def find_nav_files(base: str | Path, workdir: str | Path) -> list[Path]:
     return out
 
 
+def has_nav_files(base: str | Path) -> bool:
+    """True when navigation files come with the base: members of the zip, or siblings of a plain file.
+    A base without them leaves GPS/BeiDou unusable with DJI rover logs (their NAV carries stale GPS ephemerides)."""
+    src = Path(base)
+    if src.suffix.lower() == ".zip":
+        try:
+            with zipfile.ZipFile(src) as zf:
+                return any(NAV_NAME_RE.search(n) and not n.endswith("/") for n in zf.namelist())
+        except (OSError, zipfile.BadZipFile):
+            return False
+    stem = src.name
+    for suf in (".gz", ".Z", ".crx", ".rnx"):
+        if stem.endswith(suf):
+            stem = stem[: -len(suf)]
+    stem = re.sub(r"\.\d{2}[oOdD]$|\.obs$", "", stem)
+    return any(p.is_file() and p != src and p.name.startswith(stem) and NAV_NAME_RE.search(p.name) for p in src.parent.iterdir())
+
+
 def nav_epochs(path: str | Path) -> dict[str, list[datetime]]:
     """Ephemeris reference epochs per constellation letter in a RINEX 3 navigation file."""
     out: dict[str, list[datetime]] = {}

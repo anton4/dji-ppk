@@ -390,6 +390,9 @@ def test_folder_status_next_step(tmp_path):
     hdr = (FIX / "base_header.26o").read_text()
     base.write_text(hdr + "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 08 29 59.0000000  0  1\n")
     st = folder_status(d, flights, None)
+    assert st.next == "order" and "no navigation files" in st.base  # covers, but GPS would be unusable
+    (d / "base.26n").write_text("")
+    st = folder_status(d, flights, None)
     assert st.base == "base.26o" and st.next == "process"
     (d / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 5, "events": {"fix": 5, "mrk": 5}}))
     st = folder_status(d, flights, None)
@@ -436,6 +439,7 @@ def test_rinex_retention(tmp_path):
     st = folder_status(d, flights, None, now=datetime(2026, 12, 5))
     assert st.next == "order" and "(6 d left)" in st.row()[2]
     (d / "base.26o").write_text((FIX / "base_header.26o").read_text() + "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 08 29 59.0000000  0  1\n")
+    (d / "base.26n").write_text("")
     st = folder_status(d, flights, None, now=datetime(2026, 12, 15))
     assert st.next == "photos"  # base present: still processable even though the portal has no data any more
 
@@ -483,3 +487,18 @@ def test_accuracy_text(tmp_path):
     assert accuracy_text(merged) == "H 51 cm→0.4 cm  V 12 cm→0.7 cm"
     (tmp_path / "s3.json").write_text(json.dumps({"events": {}}))
     assert accuracy_text(tmp_path / "s3.json") == ""
+
+
+def test_has_nav_files(tmp_path):
+    import zipfile
+    from ppk.rinex import has_nav_files
+    (tmp_path / "virt255g30.26o").write_text("x")
+    assert not has_nav_files(tmp_path / "virt255g30.26o")
+    (tmp_path / "virt255g30.26n").write_text("x")
+    assert has_nav_files(tmp_path / "virt255g30.26o")
+    with zipfile.ZipFile(tmp_path / "a.rnx.zip", "w") as zf:
+        zf.writestr("virt261o00.26o", "x")
+    assert not has_nav_files(tmp_path / "a.rnx.zip")
+    with zipfile.ZipFile(tmp_path / "b.rnx.zip", "w") as zf:
+        zf.writestr("virt261o00.26o", "x"); zf.writestr("virt261o00.26n", "x")
+    assert has_nav_files(tmp_path / "b.rnx.zip")
