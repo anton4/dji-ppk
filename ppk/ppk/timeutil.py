@@ -66,3 +66,35 @@ def parse_pos_time(date_str: str, time_str: str) -> datetime:
 def fmt(dt: datetime, decimals: int = 3) -> str:
     s = dt.strftime("%Y/%m/%d %H:%M:%S.%f")
     return s[: len(s) - (6 - decimals)] if decimals < 6 else s
+
+
+import os as _os
+from datetime import timezone as _timezone
+from zoneinfo import ZoneInfo as _ZoneInfo
+
+GPS_UTC_LEAP_SECONDS = 18  # valid since 2017-01-01
+
+
+def local_tz():
+    """Time zone for human readable output: $PPK_TZ, else $TZ, else Europe/Tallinn."""
+    name = _os.environ.get("PPK_TZ") or _os.environ.get("TZ") or "Europe/Tallinn"
+    try:
+        return _ZoneInfo(name)
+    except Exception:  # noqa: BLE001
+        return _ZoneInfo("Europe/Tallinn")
+
+
+def gpst_to_local(t: datetime) -> datetime:
+    """Naive GPST -> aware local time (GPST is UTC + 18 s)."""
+    return (t - timedelta(seconds=GPS_UTC_LEAP_SECONDS)).replace(tzinfo=_timezone.utc).astimezone(local_tz())
+
+
+def span_local(first: datetime, last: datetime, seconds: bool = False) -> str:
+    """'2026-09-18 17:18 - 17:38 EEST' from two naive GPST datetimes."""
+    a, b = gpst_to_local(first), gpst_to_local(last)
+    if not seconds:  # round to the nearest minute so 13:59:42 UTC reads as 17:00, not 16:59
+        a = (a + timedelta(seconds=30)).replace(second=0, microsecond=0)
+        b = (b + timedelta(seconds=30)).replace(second=0, microsecond=0)
+    f = "%H:%M:%S" if seconds else "%H:%M"
+    day = "" if a.date() == b.date() else f"{b:%Y-%m-%d} "
+    return f"{a:%Y-%m-%d} {a:{f}} - {day}{b:{f}} {a.tzname()}"

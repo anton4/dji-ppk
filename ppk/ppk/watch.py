@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .discover import find_flights, Flight
 from .rinex import find_base_candidates, read_header, scan_obs_span, prepare_obs
+from .timeutil import span_local
 
 log = logging.getLogger("ppk.watch")
 
@@ -50,8 +51,8 @@ def resolve_base(flight: Flight, base_dir: Path | None, workdir: Path | None = N
                 continue
             if bspan[0] <= span[0] and bspan[1] >= span[1]:
                 return cand
-            log.info("%s covers %s - %s, flight needs %s - %s: skipped", cand.name,
-                     bspan[0], bspan[1], span[0], span[1])
+            log.info("%s covers %s, flight needs %s: skipped", cand.name,
+                     span_local(bspan[0], bspan[1]), span_local(span[0], span[1]))
         return None
     finally:
         shutil.rmtree(scratch, ignore_errors=True)

@@ -17,10 +17,11 @@ from zoneinfo import ZoneInfo
 from .discover import Flight
 from .mrk import parse_mrk
 from .rinex import RinexHeader, read_header, scan_obs_span
+from .timeutil import span_local, local_tz
 
 PORTAL_URL = "https://gnss-rtk.maaamet.ee/sbc"
-LOCAL_TZ = ZoneInfo("Europe/Tallinn")
-GPS_UTC_LEAP_SECONDS = 18  # valid since 2017-01-01; ESTPOS order form is in UTC
+LOCAL_TZ = local_tz()  # Europe/Tallinn unless TZ / PPK_TZ says otherwise
+GPS_UTC_LEAP_SECONDS = 18  # valid since 2017-01-01
 QUARTER = timedelta(minutes=15)
 
 _XMP_ABS = re.compile(rb'drone-dji:AbsoluteAltitude="([+-]?\d+(?:\.\d+)?)"')
@@ -107,6 +108,7 @@ def plan_order(flight: Flight, buffer_minutes: int = 5, height_override: float |
 
 def format_order(order: EstposOrder, flight: Flight) -> str:
     dur_min = int(order.duration.total_seconds() // 60)
+    tz = order.start_local.tzname()
     lines = [
         "=" * 72,
         " ESTPOS Virtual RINEX order for flight: " + flight.name,
@@ -115,15 +117,15 @@ def format_order(order: EstposOrder, flight: Flight) -> str:
         f" Latitude (deg):    {order.lat:.7f}",
         f" Longitude (deg):   {order.lon:.7f}",
         f" Ellips. height:    {order.height:.2f} m   ({order.height_source})",
-        f" Date:              {order.start_utc:%Y-%m-%d} (UTC)",
-        f" Start time (UTC):  {order.start_utc:%H:%M}   quarter = {order.start_utc:%M}",
+        f" Date:              {order.start_local:%Y-%m-%d}  ({tz} = Estonian time, what the form and the DJI folder use)",
+        f" Start time:        {order.start_local:%H:%M} {tz}   quarter = {order.start_local:%M}",
         f" Length:            {dur_min} min  ({dur_min / 60:.2f} h)  -> pick the next available length in the form",
-        f" End time (UTC):    {order.end_utc:%H:%M}",
+        f" End time:          {order.end_local:%H:%M} {tz}",
         f" Interval:          1 s (keep default)",
         "-" * 72,
-        f" Local time:        {order.start_local:%Y-%m-%d %H:%M} - {order.end_local:%H:%M} {order.start_local.tzname()}",
-        f" Flight span GPST:  {order.flight_first_gpst:%Y-%m-%d %H:%M:%S} - {order.flight_last_gpst:%H:%M:%S}"
-        f"  (UTC = GPST - {GPS_UTC_LEAP_SECONDS} s)",
+        f" Same in UTC:       {order.start_utc:%Y-%m-%d %H:%M} - {order.end_utc:%H:%M} UTC",
+        f" Flight:            {span_local(order.flight_first_gpst, order.flight_last_gpst, seconds=True)}"
+        f"  ({order.flight_first_gpst:%H:%M:%S} - {order.flight_last_gpst:%H:%M:%S} GPST)",
         f" Photos:            {len(flight.images)}",
         "=" * 72,
         f" After download, copy the .??o/.rnx (or the zip) into {flight.directory} and run:",
@@ -162,7 +164,7 @@ def check_base(base_obs: Path, flight: Flight | None, antex: Path | None = None)
     else:
         checks.append(Check(False, "FAIL", "APPROX POSITION XYZ missing or zero: set ant2-postype/pos manually"))
     if first and last:
-        checks.append(Check(True, "INFO", f"base span {first:%Y-%m-%d %H:%M:%S} - {last:%H:%M:%S} GPST, {n} epochs"))
+        checks.append(Check(True, "INFO", f"base span {span_local(first, last)} ({first:%H:%M:%S} - {last:%H:%M:%S} GPST), {n} epochs"))
     if flight is not None and first and last:
         fh = read_header(flight.obs)
         f_first, f_last, _ = scan_obs_span(flight.obs, fh)
@@ -171,7 +173,7 @@ def check_base(base_obs: Path, flight: Flight | None, antex: Path | None = None)
         if f_first and f_last:
             covers = first <= f_first and last >= f_last
             checks.append(Check(covers, "PASS" if covers else "FAIL",
-                                f"flight span {f_first:%H:%M:%S} - {f_last:%H:%M:%S} GPST is "
+                                f"flight span {span_local(f_first, f_last)} ({f_first:%H:%M:%S} - {f_last:%H:%M:%S} GPST) is "
                                 f"{'covered' if covers else 'NOT covered'} by the base file"))
             if llh:
                 mrk = parse_mrk(flight.mrk)
