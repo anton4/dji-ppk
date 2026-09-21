@@ -77,13 +77,46 @@ def image_exists(tag: str) -> bool:
     return subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode == 0
 
 
+def image_created(tag: str) -> float | None:
+    r = subprocess.run(["docker", "image", "inspect", "--format", "{{.Created}}", tag], capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    from datetime import datetime, timezone
+    s = r.stdout.strip()
+    s = re.sub(r"(\.\d{6})\d*", r"\1", s).replace("Z", "+00:00")  # trim nanoseconds for fromisoformat
+    try:
+        return datetime.fromisoformat(s).astimezone(timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def newest_source(paths: list[str]) -> float:
+    newest = 0.0
+    for p in paths:
+        for f in ([Path(p)] if Path(p).is_file() else Path(p).rglob("*")):
+            if f.is_file() and "__pycache__" not in f.parts:
+                newest = max(newest, f.stat().st_mtime)
+    return newest
+
+
+_STALE_WARNED: set[str] = set()
+
+
 def ensure_images(env: dict[str, str], estpos: bool = False) -> None:
-    """Build missing images with visible output; a silent auto-build looks like a hang (RTKLIB compiles for minutes)."""
+    """Build missing images with visible output (a silent auto-build looks like a hang: RTKLIB compiles for
+    minutes) and warn when an image is older than the code it was built from (after a git pull)."""
     need = []
-    if not image_exists(f"dji-ppk:{env.get('RTKLIB_REF', 'v2.5.1')}"):
-        need.append("ppk")
-    if estpos and not image_exists("dji-ppk-estpos"):
-        need.append("ppk-estpos")
+    tag = f"dji-ppk:{env.get('RTKLIB_REF', 'v2.5.1')}"
+    checks = [("ppk", tag, ["ppk", "config", "Dockerfile"])]
+    if estpos:
+        checks.append(("ppk-estpos", "dji-ppk-estpos", ["ppk", "Dockerfile.estpos"]))
+    for service, image, sources in checks:
+        created = image_created(image)
+        if created is None:
+            need.append(service)
+        elif created < newest_source(sources) and service not in _STALE_WARNED:
+            _STALE_WARNED.add(service)
+            print(c(f"note: image {image} is older than the code (git pull?). Run ./dji-ppk build to update it.", "yellow"), file=sys.stderr)
     if need:
         print(c(f"image(s) not built yet: {' '.join(need)}. Building now (first run compiles RTKLIB, several minutes) ...", "yellow"))
         if compose("build", *need).returncode != 0:
