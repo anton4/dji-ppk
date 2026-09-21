@@ -471,12 +471,15 @@ def test_accuracy_text(tmp_path):
     import json
     from ppk.status import accuracy_text
     one = tmp_path / "s1.json"
-    one.write_text(json.dumps({"rtk_vs_ppk": {"horizontal_error": {"rms_mm": 412.3}}, "quality": {"std_mm": {"horizontal": {"median": 3.6}}}}))
-    assert accuracy_text(one) == "41 cm → 0.4 cm"
+    one.write_text(json.dumps({"rtk_vs_ppk": {"horizontal_error": {"rms_mm": 412.3}, "vertical_error": {"rms_mm": 209.0}},
+                               "quality": {"std_mm": {"horizontal": {"median": 3.6}, "up": {"median": 6.0}}}}))
+    assert accuracy_text(one) == "H 41 cm→0.4 cm  V 21 cm→0.6 cm"
     merged = tmp_path / "s2.json"
     merged.write_text(json.dumps({"session_summaries": [
-        {"rtk_vs_ppk": {"horizontal_error": {"rms_mm": 170.0}}, "quality": {"std_mm": {"horizontal": {"median": 3.5}}}},
-        {"rtk_vs_ppk": {"horizontal_error": {"rms_mm": 510.0}}, "quality": {"std_mm": {"horizontal": {"median": 4.0}}}}]}))
-    assert accuracy_text(merged) == "51 cm → 0.4 cm"
+        {"rtk_vs_ppk": {"horizontal_error": {"rms_mm": 170.0}, "vertical_error": {"rms_mm": 90.0}},
+         "quality": {"std_mm": {"horizontal": {"median": 3.5}, "up": {"median": 5.6}}}},
+        {"rtk_vs_ppk": {"horizontal_error": {"rms_mm": 510.0}, "vertical_error": {"rms_mm": 120.0}},
+         "quality": {"std_mm": {"horizontal": {"median": 4.0}, "up": {"median": 7.4}}}}]}))
+    assert accuracy_text(merged) == "H 51 cm→0.4 cm  V 12 cm→0.7 cm"
     (tmp_path / "s3.json").write_text(json.dumps({"events": {}}))
     assert accuracy_text(tmp_path / "s3.json") == ""

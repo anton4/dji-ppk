@@ -30,7 +30,7 @@ class FolderStatus:
     result: str
     next: str
     rinex_days_left: int | None = None
-    accuracy: str = ""  # "41 cm → 0.4 cm": typical horizontal photo error as flown (on-board RTK) → after PPK (RTKLIB estimate)
+    accuracy: str = ""  # "H 41 cm→0.4 cm  V 21 cm→0.6 cm": typical photo error as flown (on-board RTK) → after PPK (RTKLIB estimate)
 
     def row(self) -> list[str]:
         flown = self.flown
@@ -114,24 +114,30 @@ def _cm(mm: float | None) -> str:
 
 
 def accuracy_text(summary_path: Path) -> str:
-    """'41 cm → 0.4 cm': typical horizontal error of the photo positions as flown (on-board RTK vs PPK, rms) and
-    RTKLIB's estimated 1-sigma after PPK. For several sessions the worst session is shown."""
+    """'H 41 cm→0.4 cm  V 21 cm→0.6 cm': typical horizontal and vertical error of the photo positions as flown
+    (on-board RTK vs PPK, rms) and RTKLIB's estimated 1-sigma after PPK. For several sessions the worst session is shown."""
     try:
         s = json.loads(summary_path.read_text())
     except (OSError, ValueError):
         return ""
     sessions = s.get("session_summaries") or [s]
-    flown, ppk = [], []
+    flown_h, flown_v, ppk_h, ppk_v = [], [], [], []
     for ss in sessions:
         rtk = ss.get("rtk_vs_ppk") or {}
         if rtk.get("horizontal_error", {}).get("rms_mm") is not None:
-            flown.append(rtk["horizontal_error"]["rms_mm"])
-        q = (ss.get("quality") or {}).get("std_mm", {}).get("horizontal", {})
-        if q.get("median") is not None:
-            ppk.append(q["median"])
-    if not ppk:
+            flown_h.append(rtk["horizontal_error"]["rms_mm"])
+        if rtk.get("vertical_error", {}).get("rms_mm") is not None:
+            flown_v.append(rtk["vertical_error"]["rms_mm"])
+        sd = (ss.get("quality") or {}).get("std_mm", {})
+        if sd.get("horizontal", {}).get("median") is not None:
+            ppk_h.append(sd["horizontal"]["median"])
+        if sd.get("up", {}).get("median") is not None:
+            ppk_v.append(sd["up"]["median"])
+    if not ppk_h:
         return ""
-    return (_cm(max(flown)) if flown else "?") + " → " + _cm(max(ppk))
+    h = (_cm(max(flown_h)) if flown_h else "?") + "→" + _cm(max(ppk_h))
+    v = ((_cm(max(flown_v)) if flown_v else "?") + "→" + _cm(max(ppk_v))) if ppk_v else "?"
+    return f"H {h}  V {v}"
 
 
 def scan_status(root: Path, base_dir: Path | None) -> list[FolderStatus]:
