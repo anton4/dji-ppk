@@ -391,11 +391,13 @@ def order_and_download(order: EstposOrder, project: str, dest_dir: Path, user: s
     return paths[0] if paths else None
 
 
-def order_and_download_many(orders: list[tuple[EstposOrder, str]], dest_dir: Path, user: str, password: str, *,
+def order_and_download_many(orders: list[tuple[EstposOrder, "str | list[str]"]], dest_dir: Path, user: str, password: str, *,
                             rate_s: int = 1, height: float | None = None, wait: bool = True, timeout_min: float = 60,
                             headed: bool = False, dry_run: bool = False, screenshot: Path | None = None) -> list[Path]:
     """Place one or more orders (e.g. a long flight day split at the portal's length limit) in one browser
-    session, then wait for and download each of them. Returns the downloaded files (empty for dry runs)."""
+    session, then wait for and download each of them. Returns the downloaded files (empty for dry runs).
+    Each order comes with its project name, or a list of names: the first is used when ordering, all of them
+    are accepted when looking for an existing order (older orders used a plain truncation of the folder name)."""
     pw, browser, context = _browser(headed)
     page = None
     try:
@@ -407,8 +409,9 @@ def order_and_download_many(orders: list[tuple[EstposOrder, str]], dest_dir: Pat
         for i, (order, project) in enumerate(orders, 1):
             if len(orders) > 1:
                 log.info("--- order %d/%d ---", i, len(orders))
-            short = project[:PROJECT_MAX]
-            prior = find_existing(existing, [short] + project_candidates(project), order)
+            names = [n[:PROJECT_MAX] for n in ([project] if isinstance(project, str) else list(project))]
+            project, short = names[0], names[0]
+            prior = find_existing(existing, names, order)
             if prior is not None:
                 log.info("the portal already has this order (%r requested %s, %s): not ordering again, downloading it",
                          prior.project, prior.requested, "ready" if prior.ready else "still processing")
@@ -454,7 +457,7 @@ def _error_screenshot(page, dest_dir: Path) -> None:
         pass
 
 
-def download_for_orders(orders: list[tuple[EstposOrder, str]], dest_dir: Path, user: str, password: str, *,
+def download_for_orders(orders: list[tuple[EstposOrder, "str | list[str]"]], dest_dir: Path, user: str, password: str, *,
                         timeout_min: float = 0, headed: bool = False) -> list[Path]:
     """Download-only: for each planned order find the matching entry on the portal (same project name, start and
     length) and download it. Never places an order. Raises FileNotFoundError when nothing matches."""
@@ -467,7 +470,7 @@ def download_for_orders(orders: list[tuple[EstposOrder, str]], dest_dir: Path, u
         paths = []
         missing = []
         for order, project in orders:
-            names = [project[:PROJECT_MAX]] + project_candidates(project)
+            names = [n[:PROJECT_MAX] for n in ([project] if isinstance(project, str) else list(project))]
             entry = find_existing(entries, names, order)
             if entry is None:
                 missing.append(f"{names[0]!r} for {order.start_local:%Y-%m-%d %H:%M} local, {order.duration.total_seconds() / 3600:.2f} h")
