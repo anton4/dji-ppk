@@ -259,8 +259,16 @@ def submit_order(page) -> None:
     btn.first.click()
     confirm = page.get_by_role("button", name=re.compile(r"^(Kinnita|Confirm)$"))
     confirm.first.wait_for(state="visible", timeout=15_000)
-    summary = page.locator(".modal:visible, [role=dialog]:visible").first.inner_text()
-    log.info("portal summary before confirming:\n%s", re.sub(r"\d{2} ° \d{2} ' [\d.]+ \" [NE]", "<dms>", summary).strip())
+    dialog = page.locator(".modal:visible, [role=dialog]:visible").first
+    summary = ""
+    for _ in range(20):  # the dialog shows its labels first and fills the values a moment later
+        summary = dialog.inner_text()
+        if re.search(r"Kestvus:\s*\d", summary):
+            break
+        page.wait_for_timeout(250)
+    fields = [ln.strip() for ln in summary.splitlines()
+              if re.match(r"(Soovitatud algusaeg|Kestvus|Vaatlusandmete sagedus|Geodeetiline kõrgus):\s*\S", ln.strip())]
+    log.info("portal summary before confirming: %s", " | ".join(fields) if fields else summary.replace("\n", " | ").strip())
     with page.expect_response(lambda r: "/Xpos/API" in r.url and r.request.method == "POST", timeout=60_000) as info:
         confirm.first.click()
     resp = info.value
