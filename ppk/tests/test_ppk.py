@@ -249,3 +249,11 @@ def test_local_time_helpers(monkeypatch):
     assert (t.hour, t.minute, t.second, t.tzname()) == (17, 18, 36, "EEST")  # UTC+3 and minus 18 leap seconds
     assert span_local(datetime(2026, 9, 18, 14, 18, 54), datetime(2026, 9, 18, 14, 38, 36)) == "2026-09-18 17:19 - 17:38 EEST"
     assert span_local(datetime(2026, 9, 18, 14, 0, 0), datetime(2026, 9, 18, 14, 59, 59)) == "2026-09-18 17:00 - 18:00 EEST"
+
+
+def test_find_reference_events_skips_own_output(tmp_path):
+    import shutil
+    from ppk.compare import find_reference_events
+    shutil.copy(FIX / "sample_events.pos", tmp_path / "DJI_x_events.pos")
+    shutil.copy(FIX / "sample_events.pos", tmp_path / "DJI_x_trajectory_events.pos")
+    assert [p.name for p in find_reference_events(tmp_path)] == ["DJI_x_events.pos"]

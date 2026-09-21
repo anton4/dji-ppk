@@ -12,14 +12,19 @@ all development by the same author now happens on `main`. The tag is a build arg
 
 A 20 min, 5 Hz flight with 1230 photos and an ESTPOS Virtual RINEX base 130 m from the site, compared with
 Emlid Studio 1.10 (1229/1230 photos fixed). The comparison report is in `examples/reference-result/`.
+Emlid was fed the DJI `.NAV` only, so its reference is a Galileo-only solution (see the NAV note below); the
+rows with base navigation files therefore differ more from Emlid while using three times as many satellites.
 
 | configuration | photos fixed | trajectory fixed | median 3D vs Emlid |
 |---|---|---|---|
-| `dji_m4e.conf` (L1+L2+L5, base PCO+PCV) **default** | 1230/1230 | 99.6 % | 5.8 mm (1.5 mm horizontal, 5.7 mm vertical) |
+| `dji_m4e.conf` (L1+L2+L5, GPS+SBAS+Galileo+QZSS+BeiDou, base PCO+PCV, base navigation files) **default** | 1230/1230 | 100 % | 12.2 mm; RTKLIB std 3.5 mm horizontal, 5.6 mm vertical, 19-23 satellites |
+| same, DJI NAV only (no GPS, no BeiDou: Galileo on 4-7 satellites, like Emlid) | 1230/1230 | 99.6 % | 5.8 mm (1.5 mm horizontal, 5.7 mm vertical) |
 | default + `--set pos1-posopt2=off` (PCO only) | 1230/1230 | 99.5 % | 2.1 mm |
 | `dji_m4e_l1l2.conf` (L1+L2) | 1230/1230 | 100 % | 14.1 mm (vertical) |
 | RTKLIB-EX `main` @ `06e86442` (2026-08-31), same conf | 1230/1230 | 99.0 % | 5.8 mm (photo positions equal to v2.5.1 within 0.5 mm) |
-| `--set pos1-navsys=63` (GLONASS + BeiDou on) | 0 | 0 % | no solution |
+| `--set pos1-navsys=27` (GPS+Galileo only, the default before 2026-09-21) | 1230/1230 | 100 % | 11.6 mm; photo positions within 2.8 mm median of the BeiDou default |
+| GLONASS added, `pos2-gloarmode=autocal` | 0 | 0 % | never fixes: DJI vs Leica inter-channel biases |
+| GLONASS added as float only (`pos1-navsys=31`) | 1230/1230 | 100 % | 11.5 mm, but the 2026-09-18 flight drops to 1141/1225 fixed |
 | `--set misc-timeinterp=on` | 0 | – | RTKLIB writes no event solutions |
 
 Processing time is about 5 s per flight.
@@ -37,7 +42,7 @@ Build any other version with `RTKLIB_REF=<tag|branch> docker compose --profile c
 Dockerfile           multi-stage build: RTKLIB-EX (rnx2rtkp, convbin, pos2kml), crx2rnx, IGS ANTEX, python package
 compose.yaml         services `ppk` (one-shot CLI, profile "cli") and `ppk-watch` (folder watcher)
 .env.example         template for host directories (FLIGHTS_DIR, BASE_DIR, OUT_DIR), poll interval, RTKLIB_REF
-config/dji_m4e.conf  RTKLIB options (three frequencies, GPS+SBAS+Galileo+QZSS, fix-and-hold, combined filter)
+config/dji_m4e.conf  RTKLIB options (three frequencies, GPS+SBAS+Galileo+QZSS+BeiDou, fix-and-hold, combined filter)
 config/dji_m4e_l1l2.conf  two-frequency variant
 config/dji_m4e_main.conf  variant for RTKLIB-EX `main` (satellite-count semantics differ from v2.5.1)
 ppk/                 python package `ppk` (stdlib only) with the CLI, parsers and tests

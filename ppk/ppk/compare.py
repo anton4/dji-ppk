@@ -110,6 +110,8 @@ def find_reference_events(directory: Path, exclude: Path | None = None) -> list[
     for p in sorted(directory.glob("*_events*.pos")):
         if exclude and p.resolve() == exclude.resolve():
             continue
+        if p.name.endswith("_trajectory_events.pos"):
+            continue  # our own output (antenna positions), never a reference
         try:
             out.append((sum(1 for r in read_pos(p).rows if r.q == 1), p))
         except OSError:
