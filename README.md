@@ -79,8 +79,10 @@ DJI_202609051108_033_site-a         2/1234       2026-09-05 11:34 - 12:04 EEST  
 DJI_202609181702_037_site-b         1/1225       2026-09-18 17:19 - 17:38 EEST  missing             not processed                       order
 ```
 
-For a folder: **run** (order the Virtual RINEX if no base file covers the sessions yet, then process), order only,
-process only, show the order parameters, or a dry run of the order. Non-interactive forms:
+Folders with something to do are pre-ticked. Type numbers (`1 3`, `2-4`) to tick or untick, `a` for all pending,
+`n` for none, then an action for everything ticked: **r** run (order the Virtual RINEX if no base file covers the
+sessions yet, then process), **d** download an existing order only, **o** order only, **p** process only, **w** show
+the order parameters, **W** start the watcher, **s** rescan, **q** quit. Non-interactive forms:
 
 ```sh
 ./dji-ppk status                 # the table above (add --json for scripts)

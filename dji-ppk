@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # dji-ppk: one entry point for the whole flow. Runs on the host, drives the two containers.
 #
-#   ./dji-ppk                     interactive menu (status table, pick a folder, pick an action)
+#   ./dji-ppk                     interactive menu: status table, tick folders, apply run / download / order / process
 #   ./dji-ppk status              one line per flight folder: sessions, photos, base, result, next step
 #   ./dji-ppk run <folder>        order the Virtual RINEX if needed, then process (geo.txt & co)
 #   ./dji-ppk run --all           the same for every folder that is not done yet
@@ -94,12 +94,12 @@ cmd_run() {
   local f="$1"
   echo "${B}== $f: base file${N}"
   if grep -qE '^ESTPOS_USER=.+' .env; then
-    estpos estpos-order "$(cpath "$f")" || die "ordering the Virtual RINEX failed for $f"
+    estpos estpos-order "$(cpath "$f")" || { echo "${R}ordering the Virtual RINEX failed for $f${N}" >&2; return 1; }
   else
     echo "${Y}ESTPOS credentials not set in .env: skipping the order step, using whatever base file is in the folder${N}"
   fi
   echo "${B}== $f: processing${N}"
-  ppk process "$(cpath "$f")" || die "processing failed for $f"
+  ppk process "$(cpath "$f")" || { echo "${R}processing failed for $f${N}" >&2; return 1; }
 }
 
 cmd_run_all() {
@@ -114,54 +114,69 @@ cmd_build() { compose build ppk ppk-estpos; }
 
 menu() {
   need_env
+  local -a names nexts sel
+  local rescan=1 input tok i
   while true; do
-    echo; echo "${B}Flight folders under FLIGHTS_DIR${N}"
-    scan
+    if (( rescan )); then
+      echo; echo "${B}Flight folders under FLIGHTS_DIR${N}"
+      scan
+      names=(); nexts=(); sel=()
+      while IFS=$'\t' read -r n x; do [[ -n "$n" ]] && { names+=("$n"); nexts+=("$x"); }; done < <(all_folders)
+      for i in "${!names[@]}"; do   # pre-tick everything that has a sensible next step
+        case "${nexts[$i]}" in order|process|reprocess) sel[$i]=1 ;; *) sel[$i]=0 ;; esac
+      done
+      rescan=0
+    fi
+    (( ${#names[@]} )) || { echo "no flight folders found under FLIGHTS_DIR"; exit 0; }
+    echo
     render_table
     echo "${D}next: order = no base file yet, photos = photos still missing in the folder (copy finished?), process/reprocess = run it,${N}"
     echo "${D}      done = nothing to do, expired = older than 90 days, ESTPOS has no RINEX for it any more (only a base file already in the folder helps)${N}"
     echo
-    local -a names nexts
-    names=(); nexts=()
-    while IFS=$'\t' read -r n x; do [[ -n "$n" ]] && { names+=("$n"); nexts+=("$x"); }; done < <(all_folders)
-    local -a items
-    items=()
-    for i in "${!names[@]}"; do items+=("${names[$i]}  ${D}(next: ${nexts[$i]})${N}"); done
-    items+=("run everything that is not done" "start the watcher" "quit")
-    PS3="${B}Pick a folder or an action: ${N}"
-    local choice
-    select choice in "${items[@]}"; do
-      case "$REPLY" in
-        "$(( ${#names[@]} + 1 ))") cmd_run_all; break ;;
-        "$(( ${#names[@]} + 2 ))") cmd_watch; break ;;
-        "$(( ${#names[@]} + 3 ))") exit 0 ;;
-        *)
-          if [[ "$REPLY" =~ ^[0-9]+$ ]] && (( REPLY >= 1 && REPLY <= ${#names[@]} )); then
-            folder_menu "${names[$((REPLY - 1))]}"; break
-          fi
-          echo "invalid choice" ;;
-      esac
+    for i in "${!names[@]}"; do
+      local mark=" "; (( sel[$i] )) && mark="${G}x${N}"
+      printf "  %2d) [%s] %s  ${D}(next: %s)${N}\n" "$((i + 1))" "$mark" "${names[$i]}" "${nexts[$i]}"
     done
-  done
-}
-
-folder_menu() {
-  local f="$1"
-  echo; echo "${B}$f${N}"
-  PS3="${B}What to do with $f: ${N}"
-  local act
-  select act in "run: order the base if needed, then process" "order the base only" \
-                "download the base only (already ordered on the portal, never orders)" "process only" \
-                "show the order parameters" "dry-run the order (fill the form, do not submit)" "back"; do
-    case "$REPLY" in
-      1) cmd_run "$f"; break ;;
-      2) cmd_order "$f"; break ;;
-      3) cmd_download "$f"; break ;;
-      4) cmd_process "$f"; break ;;
-      5) cmd_window "$f"; break ;;
-      6) cmd_dryrun "$f"; break ;;
-      7) break ;;
-      *) echo "invalid choice" ;;
+    echo
+    echo "${B}Tick:${N} numbers toggle (e.g. ${B}1 3${N} or ${B}2-4${N}), ${B}a${N} = all pending, ${B}A${N} = all, ${B}n${N} = none"
+    echo "${B}Then:${N} ${B}r${N} = run ticked (order base if needed + process)   ${B}d${N} = download base only   ${B}o${N} = order base only"
+    echo "      ${B}p${N} = process only   ${B}w${N} = show order parameters   ${B}s${N} = rescan   ${B}W${N} = start the watcher   ${B}q${N} = quit"
+    read -r -p "> " input || exit 0
+    local -a picked=()
+    for i in "${!names[@]}"; do (( sel[$i] )) && picked+=("${names[$i]}"); done
+    case "$input" in
+      q|Q) exit 0 ;;
+      s|S) rescan=1; continue ;;
+      W)   cmd_watch; rescan=1; continue ;;
+      a)   for i in "${!names[@]}"; do case "${nexts[$i]}" in order|process|reprocess) sel[$i]=1 ;; *) sel[$i]=0 ;; esac; done; continue ;;
+      A)   for i in "${!names[@]}"; do sel[$i]=1; done; continue ;;
+      n|N) for i in "${!names[@]}"; do sel[$i]=0; done; continue ;;
+      r|d|o|p|w)
+        (( ${#picked[@]} )) || { echo "${Y}nothing ticked${N}"; continue; }
+        for f in "${picked[@]}"; do
+          echo; echo "${B}==== $f ====${N}"
+          case "$input" in
+            r) cmd_run "$f" || echo "${R}$f failed${N}" ;;
+            d) cmd_download "$f" || echo "${R}$f failed${N}" ;;
+            o) cmd_order "$f" || echo "${R}$f failed${N}" ;;
+            p) cmd_process "$f" || echo "${R}$f failed${N}" ;;
+            w) cmd_window "$f" || echo "${R}$f failed${N}" ;;
+          esac
+        done
+        [[ "$input" == "w" ]] || rescan=1
+        continue ;;
+      *)
+        for tok in $input; do
+          if [[ "$tok" =~ ^[0-9]+$ ]]; then
+            (( tok >= 1 && tok <= ${#names[@]} )) && sel[$((tok - 1))]=$(( 1 - sel[$((tok - 1))] )) || echo "${Y}no folder $tok${N}"
+          elif [[ "$tok" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+            for (( i = BASH_REMATCH[1]; i <= BASH_REMATCH[2]; i++ )); do
+              (( i >= 1 && i <= ${#names[@]} )) && sel[$((i - 1))]=$(( 1 - sel[$((i - 1))] ))
+            done
+          else
+            echo "${Y}unknown input '$tok'${N}"
+          fi
+        done ;;
     esac
   done
 }
