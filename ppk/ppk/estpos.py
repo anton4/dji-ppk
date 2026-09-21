@@ -23,6 +23,13 @@ PORTAL_URL = "https://gnss-rtk.maaamet.ee/sbc"
 LOCAL_TZ = local_tz()  # Europe/Tallinn unless TZ / PPK_TZ says otherwise
 GPS_UTC_LEAP_SECONDS = 18  # valid since 2017-01-01
 QUARTER = timedelta(minutes=15)
+RINEX_RETENTION_DAYS = 90  # the portal offers RINEX / Virtual RINEX for the last 90 days only
+
+
+def rinex_days_left(first_obs_gpst: datetime, now: datetime | None = None) -> int:
+    """Days until ESTPOS stops offering RINEX for a flight that started at `first_obs_gpst`; negative = expired."""
+    now = now or datetime.utcnow()
+    return RINEX_RETENTION_DAYS - (now.date() - gpst_to_utc(first_obs_gpst).date()).days
 
 _XMP_ABS = re.compile(rb'drone-dji:AbsoluteAltitude="([+-]?\d+(?:\.\d+)?)"')
 _XMP_REL = re.compile(rb'drone-dji:RelativeAltitude="([+-]?\d+(?:\.\d+)?)"')
