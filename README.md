@@ -43,7 +43,8 @@ Build any other version with `RTKLIB_REF=<tag|branch> docker compose --profile c
 
 ```
 Dockerfile           multi-stage build: RTKLIB-EX (rnx2rtkp, convbin, pos2kml), crx2rnx, IGS ANTEX, python package
-compose.yaml         services `ppk` (one-shot CLI, profile "cli") and `ppk-watch` (folder watcher)
+Dockerfile.estpos    Playwright + Chromium image for ordering Virtual RINEX on the ESTPOS portal (`ppk-estpos` service)
+compose.yaml         services `ppk` (one-shot CLI), `ppk-estpos` (portal automation), both profile "cli", and `ppk-watch`
 .env.example         template for host directories (FLIGHTS_DIR, BASE_DIR, OUT_DIR), poll interval, RTKLIB_REF
 config/dji_m4e.conf  RTKLIB options (three frequencies, GPS+SBAS+Galileo+QZSS+BeiDou, fix-and-hold, combined filter)
 config/dji_m4e_l1l2.conf  two-frequency variant
@@ -64,10 +65,12 @@ docker compose --profile cli build ppk
 # 1. What to order from ESTPOS for a flight folder
 docker compose --profile cli run --rm ppk estpos-window /data/flights/<flight>
 
-# 2. Order the Virtual RINEX at https://gnss-rtk.maaamet.ee/sbc
-#    (Post Processing -> RINEX Data -> tick "Virtual RINEX", enter the printed lat/lon/height,
-#    date, quarter-hour start and length), download it into BASE_DIR, then validate it:
-docker compose --profile cli run --rm ppk check-base /data/base/<file> --flight /data/flights/<flight>
+# 2. Order the Virtual RINEX. Either let Playwright do it (needs ESTPOS_USER / ESTPOS_PASSWORD in .env;
+#    the zip lands in the flight folder and is validated), or do it by hand at https://gnss-rtk.maaamet.ee/sbc
+#    (Järeltöötlemine -> RINEX andmed -> tick "Virtuaalne RINEX", enter the printed values, Esita, then
+#    Tulemused -> Lae alla) and copy the zip into the flight folder.
+docker compose --profile cli run --rm ppk-estpos estpos-order /data/flights/<flight>
+docker compose --profile cli run --rm ppk check-base /data/flights/<flight>/<zip> --flight /data/flights/<flight>   # manual route
 
 # 3. Process. With the base RINEX copied into the flight folder nothing else is needed; geo.txt, events.csv,
 #    summary.json, the trajectory .pos files and the RTKLIB log land in the flight folder next to the photos.
@@ -83,6 +86,25 @@ Options for `process`: `--conf <file>`, `--set key=value` (repeatable RTKLIB ove
 (adds horizontal/vertical accuracy columns to `geo.txt`), `--fixed-only`, `--keep-work`, `--in-place` / `--no-in-place`, `--out-dir`, `--name`.
 `PPK_IN_PLACE=1` (the compose default) makes `--in-place` the default for `process` and `watch`.
 Without `--base` the first RINEX file inside the flight folder or under `/data/base` that covers the flight is used.
+
+### Ordering from the ESTPOS portal automatically
+
+`ppk estpos-order <flight>` runs in the separate `ppk-estpos` image (Playwright + Chromium, `Dockerfile.estpos`):
+
+1. logs in to the Spider Business Center with `ESTPOS_USER` / `ESTPOS_PASSWORD` from `.env`,
+2. fills the *RINEX andmed* form from the same numbers `estpos-window` prints: start on the quarter hour before
+   the flight (Estonian time), length, the mean photo position as the Virtual RINEX point, height, 1 s rate,
+   project name = flight folder name,
+3. **verifies before submitting**: the portal recomputes data availability after every change with the exact
+   parameters it will send; the tool reads that request back and aborts if start, end, latitude, longitude, rate
+   or project differ from the order,
+4. presses *Esita*, polls *Tulemused -> Virtuaalse RINEX-i andmed* until the entry with that project name is
+   ready (usually a few minutes), downloads the zip into the flight folder and validates it with `check-base`.
+
+Options: `--dry-run` (fill, verify, save `estpos_order_form.png`, do not submit), `--no-wait` and later
+`ppk estpos-download <flight> --project <name>`, `--project`, `--rate`, `--timeout`, `--no-send-height`.
+The portal keeps results for 14 days and raw data for 90 days. The Virtual RINEX service is free on ESTPOS
+accounts, but every run places a real order, so the watcher does not order on its own.
 
 ### Watcher
 
@@ -142,7 +164,8 @@ Emlid Studio (verified to ~1 mm). Image names are the real `DJI_..._NNNN_V.JPG` 
 - Emlid Studio `*_events.pos` files in the flight folder are used as comparison references; the tool's own
   `*_trajectory_events.pos` is excluded, so re-running in place does not compare against itself.
 - Base files may be `.??o`, RINEX 3 long names (`.rnx`), Hatanaka (`.crx`, `.??d`), `.gz`, `.Z` or `.zip`.
-- ESTPOS has no API; the portal is Leica Spider Business Center. Files are available for 90 days.
+- ESTPOS has no public API; the portal is Leica Spider Business Center and `estpos-order` drives its UI.
+  Raw data is available for 90 days, prepared results for 14 days.
 - Time zones: the DJI folder name and the ESTPOS order form use Estonian time, so the order text and the log lines
   about time spans lead with Estonian time (`TZ`, default `Europe/Tallinn`). RTKLIB output, `events.csv` and the
   values in parentheses are GPST, which is UTC + 18 s.

@@ -221,6 +221,69 @@ def cmd_estpos_window(a: argparse.Namespace) -> int:
     return 0
 
 
+def _estpos_credentials() -> tuple[str, str]:
+    user, pw = os.environ.get("ESTPOS_USER", ""), os.environ.get("ESTPOS_PASSWORD", "")
+    if not user or not pw:
+        raise SystemExit("ESTPOS_USER and ESTPOS_PASSWORD are not set. Put them into .env (it is gitignored) and rerun.")
+    return user, pw
+
+
+def cmd_estpos_order(a: argparse.Namespace) -> int:
+    """Order a Virtual RINEX for a flight on the ESTPOS portal and download it into the flight folder."""
+    try:
+        from . import estpos_web
+    except ImportError as exc:
+        raise SystemExit(f"playwright is not installed ({exc}); use the ppk-estpos compose service: "
+                         "docker compose --profile cli run --rm ppk-estpos estpos-order <flight>")
+    flight = load_flight(_flight_path(a.flight))
+    order = plan_order(flight, a.buffer, a.height)
+    print(format_order(order, flight))
+    project = a.project or flight.name
+    user, pw = _estpos_credentials()
+    dest = flight.directory
+    shot = dest / "estpos_order_form.png" if (a.dry_run or a.screenshot) else None
+    try:
+        path = estpos_web.order_and_download(order, project, dest, user, pw, rate_s=a.rate, height=order.height if a.send_height else None,
+                                             wait=not a.no_wait, timeout_min=a.timeout, headed=a.headed, dry_run=a.dry_run, screenshot=shot)
+    except Exception as exc:  # noqa: BLE001
+        log.error("%s", exc)
+        return 1
+    if path is None:
+        return 0
+    return _report_downloaded_base(path, flight)
+
+
+def cmd_estpos_download(a: argparse.Namespace) -> int:
+    """Download an already ordered Virtual RINEX (by project name) into the flight folder."""
+    try:
+        from . import estpos_web
+    except ImportError as exc:
+        raise SystemExit(f"playwright is not installed ({exc}); use the ppk-estpos compose service")
+    flight = load_flight(_flight_path(a.flight))
+    project = a.project or flight.name
+    user, pw = _estpos_credentials()
+    try:
+        path = estpos_web.download_existing(project, flight.directory, user, pw, timeout_min=a.timeout, headed=a.headed)
+    except Exception as exc:  # noqa: BLE001
+        log.error("%s", exc)
+        return 1
+    return _report_downloaded_base(path, flight)
+
+
+def _report_downloaded_base(path: Path, flight: Flight) -> int:
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="ppk-basecheck-") as tmp:
+        plain = prepare_obs(path, tmp)
+        _, checks = check_base(plain, flight, Path(os.environ.get("PPK_ANTEX", "")) or None)
+    print(f"\nBase file: {path}")
+    for c in checks:
+        print(f"  [{c.level:>4}] {c.message}")
+    worst = "FAIL" if any(c.level == "FAIL" for c in checks) else "PASS"
+    print(f"Overall: {worst}")
+    print(f"\nNext: ppk process {flight.directory}   (or wait for the watcher)")
+    return 1 if worst == "FAIL" else 0
+
+
 def cmd_check_base(a: argparse.Namespace) -> int:
     flight = load_flight(_flight_path(a.flight)) if a.flight else None
     work = Path(a.work or "/tmp/ppk-check")
@@ -299,6 +362,28 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--buffer", type=int, default=5, help="minutes of margin before/after the flight (default 5)")
     s.add_argument("--height", type=float, help="override the virtual point ellipsoidal height (m)")
     s.set_defaults(func=cmd_estpos_window)
+
+    s = sub.add_parser("estpos-order", help="order the Virtual RINEX for a flight on the ESTPOS portal and download it (Playwright)")
+    s.add_argument("flight", help="flight folder (or .OBS file)")
+    s.add_argument("--project", help="project name shown on the portal (default: flight folder name)")
+    s.add_argument("--buffer", type=int, default=5, help="minutes of margin before/after the flight (default 5)")
+    s.add_argument("--height", type=float, help="override the virtual point ellipsoidal height (m)")
+    s.add_argument("--send-height", action=argparse.BooleanOptionalAction, default=True,
+                   help="fill the height field (default) or leave it to the portal's automatic value")
+    s.add_argument("--rate", type=int, default=1, choices=(1, 5, 10, 15, 20, 30, 60), help="observation rate in seconds")
+    s.add_argument("--no-wait", action="store_true", help="submit only; download later with estpos-download")
+    s.add_argument("--timeout", type=float, default=60, help="minutes to wait for the portal to prepare the file")
+    s.add_argument("--dry-run", action="store_true", help="fill and verify the form, save a screenshot, do not submit")
+    s.add_argument("--screenshot", action="store_true", help="save estpos_order_form.png next to the flight before submitting")
+    s.add_argument("--headed", action="store_true", help="show the browser (host only)")
+    s.set_defaults(func=cmd_estpos_order)
+
+    s = sub.add_parser("estpos-download", help="download a finished Virtual RINEX order (by project name) into the flight folder")
+    s.add_argument("flight", help="flight folder (or .OBS file)")
+    s.add_argument("--project", help="project name used when ordering (default: flight folder name)")
+    s.add_argument("--timeout", type=float, default=0, help="minutes to keep polling if it is still processing (default: no wait)")
+    s.add_argument("--headed", action="store_true")
+    s.set_defaults(func=cmd_estpos_download)
 
     s = sub.add_parser("check-base", help="validate a downloaded base RINEX file, optionally against a flight")
     s.add_argument("base")
