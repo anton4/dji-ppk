@@ -19,6 +19,9 @@ WGS84_F = 1 / 298.257223563
 WGS84_E2 = WGS84_F * (2 - WGS84_F)
 
 OBS_NAME_RE = re.compile(r"(\.\d{2}[oO]$|\.rnx$|\.obs$|\.crx$|\.\d{2}[dD]$|\.gz$|\.Z$|\.zip$)", re.I)
+# navigation files: RINEX 2 style .yyN/.yyG/.yyL/.yyF(BeiDou, Leica)/.yyH/.yyQ/.yyC/.yyP/.yyI or RINEX 3 long names *_xN.rnx
+NAV_NAME_RE = re.compile(r"(\.\d{2}[nglfhqcpi]$|_[A-Z]N\.rnx$|\.nav$)", re.I)
+NAV_EPOCH_RE = re.compile(r"^([GRECJSI]\d{2}) +(\d{4}) +(\d{1,2}) +(\d{1,2}) +(\d{1,2}) +(\d{1,2}) +(\d{1,2})")
 
 
 @dataclass
@@ -210,3 +213,60 @@ def find_base_candidates(directory: str | Path) -> list[Path]:
         if OBS_NAME_RE.search(p.name):
             out.append(p)
     return out
+
+
+def find_nav_files(base: str | Path, workdir: str | Path) -> list[Path]:
+    """Navigation files that belong to a base observation file.
+
+    For a .zip every navigation member is extracted into workdir; for a plain file the siblings with the
+    same stem and a navigation suffix are returned (e.g. virt261o00.26n next to virt261o00.26o).
+    """
+    src = Path(base)
+    out: list[Path] = []
+    if src.suffix.lower() == ".zip":
+        work = Path(workdir)
+        work.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(src) as zf:
+            for name in sorted(zf.namelist()):
+                if NAV_NAME_RE.search(name) and not name.endswith("/"):
+                    out.append(Path(zf.extract(name, work)))
+        return out
+    stem = src.name
+    for suf in (".gz", ".Z", ".crx", ".rnx"):
+        if stem.endswith(suf):
+            stem = stem[: -len(suf)]
+    stem = re.sub(r"\.\d{2}[oOdD]$|\.obs$", "", stem)
+    for p in sorted(src.parent.iterdir()):
+        if p.is_file() and p != src and p.name.startswith(stem) and NAV_NAME_RE.search(p.name):
+            out.append(p)
+    return out
+
+
+def nav_epochs(path: str | Path) -> dict[str, list[datetime]]:
+    """Ephemeris reference epochs per constellation letter in a RINEX 3 navigation file."""
+    out: dict[str, list[datetime]] = {}
+    in_header = True
+    with open(path, "r", errors="replace") as fh:
+        for line in fh:
+            if in_header:
+                if "END OF HEADER" in line:
+                    in_header = False
+                continue
+            m = NAV_EPOCH_RE.match(line)
+            if not m:
+                continue
+            try:
+                t = datetime(*(int(x) for x in m.groups()[1:]))
+            except ValueError:
+                continue
+            out.setdefault(m.group(1)[0], []).append(t)
+    return out
+
+
+def stale_nav_systems(path: str | Path, when: datetime, tolerance: timedelta = timedelta(days=2)) -> dict[str, datetime]:
+    """Constellations whose ephemerides in `path` are all far from `when` (e.g. DJI writes GPS 1024 weeks early)."""
+    stale = {}
+    for sys_id, epochs in nav_epochs(path).items():
+        if epochs and all(abs(e - when) > tolerance for e in epochs):
+            stale[sys_id] = max(epochs)
+    return stale

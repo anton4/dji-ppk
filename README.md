@@ -109,7 +109,9 @@ Emlid Studio (verified to ~1 mm). Image names are the real `DJI_..._NNNN_V.JPG` 
 1. Parse the `.MRK` (photo index, GPS week/seconds with microseconds, lever arm, DJI RTK position).
 2. Copy the rover `.OBS` into the work directory inserting one RINEX event record (epoch flag 5) per
    exposure. RTKLIB interpolates its solution to those times and writes `*_events.pos`, exactly as Emlid does.
-3. Run `rnx2rtkp -k <conf> -o <trajectory.pos> <rover_events.obs> <base.obs> <rover.nav> [<base.nav>]`.
+3. Run `rnx2rtkp -k <conf> -o <trajectory.pos> <rover_events.obs> <base.obs> <rover.nav> <base navs...>`.
+   Navigation files that come with the base (the `.26n/.26g/.26l/.26f` members of the ESTPOS zip, or
+   siblings of a plain `.26o`) are passed as well.
    The base position comes from the RINEX header and the base antenna (`LEIAR25.R4 LEIT` in ESTPOS
    Virtual RINEX files) is corrected with `igs20.atx`, which is downloaded at image build time.
 4. Match the event solutions back to the MRK rows (±1.5 ms), apply the lever arm, write the outputs.
@@ -126,6 +128,10 @@ Emlid Studio (verified to ~1 mm). Image names are the real `DJI_..._NNNN_V.JPG` 
 - Base files may be `.??o`, RINEX 3 long names (`.rnx`), Hatanaka (`.crx`, `.??d`), `.gz`, `.Z` or `.zip`.
 - ESTPOS has no API; the portal is Leica Spider Business Center. Files are available for 90 days.
 - GPST vs UTC: the ESTPOS order form is in UTC (GPST − 18 s); RTKLIB output and `events.csv` are GPST.
+- **DJI `.NAV` files carry GPS ephemerides dated 1024 weeks early** (2007 instead of 2026, the GPS week rollover
+  bug). RTKLIB silently ignores them, so with the rover NAV alone GPS satellites are not used at all. Always
+  download the ESTPOS base **as the zip with its navigation files**: the processor extracts and uses them, and
+  logs a warning when the rover NAV is unusable for a constellation.
 
 ## Development
 
