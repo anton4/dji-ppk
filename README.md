@@ -71,39 +71,45 @@ cp .env.example .env     # FLIGHTS_DIR = folder that holds the DJI flight folder
 ```
 
 `./dji-ppk` is a small Python launcher on the host (standard library only, needs `python3` and Docker with the
-compose plugin) that drives the two containers. Without arguments it shows one line per flight folder and lets
-you pick what to do:
+compose plugin) that drives the two containers. Without arguments it shows a table of the flight folders and one
+START button:
 
 ```
-folder                              sess/photos  flown                          base                result                              next
-DJI_202609051108_033_site-a         2/1234       2026-09-05 11:34 - 12:04 EEST  virt248i15.rnx.zip  1234 rows in geo.txt, 1234/1234 fixed  done
-DJI_202609181702_037_site-b         1/1225       2026-09-18 17:19 - 17:38 EEST  missing             not processed                       order
+     folder                              sessions/photos  flown                          base                status
+  [x]  DJI_202609051108_033_site-a       2/1234           2026-09-05 11:34 - 12:04 EEST  missing             needs RINEX + processing
+  [ ]  DJI_202608081529_034_test         1/4              2026-08-08 15:55 - 15:58 EEST  missing             needs RINEX + processing  [skipped: only 4 photos]
+  [ ]  DJI_202605031644_012_site-b       1/1187           2026-05-03 16:44 - 17:05 EEST  missing, RINEX ...  expired  [skipped: older than 90 days]
+  [ ]  DJI_202609181702_037_site-c       1/1225           2026-09-18 17:19 - 17:38 EEST  virt261o00.rnx.zip  1225 rows in geo.txt, 1225/1225 fixed
+
+  ┌───────────────────────────────────────────────────┐
+  │   ▶  START: order RINEX + process 1 ticked folder   │
+  └───────────────────────────────────────────────────┘
+
+  ↑↓ move   Space tick / untick   Enter START   r refresh the table   q quit
 ```
 
-Move with the arrow keys, tick folders with Space (folders with something to do are pre-ticked; `a` all pending,
-`A` all, `n` none). The action bar at the bottom always shows the selected action, **run** by default: ←→ or a
-letter changes it (**r** run = order the Virtual RINEX if no base file covers the sessions yet, then process;
-**d** download an existing order only; **o** order only; **p** process only; **w** show the order parameters), Enter
-asks for confirmation and a second Enter starts it for the ticked folders. So the end-to-end path is: tick, Enter,
-Enter. **W** starts the watcher, **s** rescans, **q** quits. With nothing ticked an action applies to the highlighted folder.
-Without a terminal (pipes, Windows) a typed menu with the same keys is used. Non-interactive forms:
+Everything that needs RINEX or processing is pre-ticked, except folders older than ESTPOS's 90-day RINEX retention
+and folders with fewer than 10 photos. Enter runs the whole chain for every ticked folder, one after the other:
+order the Virtual RINEX (or reuse an order that already exists on the portal), download it into the folder, run the
+PPK, write `geo.txt`, `events.csv`, `summary.json` and `accuracy.txt`. Then the table is refreshed. Only four keys:
+arrows, Space, Enter, q (and `r` to refresh). Without a terminal (pipes, Windows) a typed menu is used.
+
+Non-interactive forms:
 
 ```sh
-./dji-ppk status                 # the table above (add --json for scripts)
-./dji-ppk run <folder>           # order if needed + process -> geo.txt, events.csv, summary.json, accuracy.txt in the folder
-./dji-ppk <folder>               # same: run is the default
-./dji-ppk run --all              # every folder whose next step is not "done"
-./dji-ppk download <folder>      # fetch an order that already exists on the portal (matched by the flight's span), never orders
-./dji-ppk order|process|window|dry-run <folder>
+./dji-ppk status                 # the table (add --json for scripts)
+./dji-ppk <folder>               # order if needed + process one folder (same as ./dji-ppk run <folder>)
+./dji-ppk run --all              # every folder the table would tick by default
+./dji-ppk order|download|process|window|dry-run <folder>   # single steps
 ./dji-ppk watch                  # start the folder watcher and follow its log
 ```
 
-`<folder>` is the folder name under `FLIGHTS_DIR` (or any path to it). The `next` column is `order` when no base
-file covers every session, `process` when the base is there, `reprocess` when an input or the base is newer than
-the result, `expired` when the flight is older than ESTPOS's 90-day RINEX retention and no base file is in the
-folder, and `done` otherwise. Moving to another machine: copy the flight folders there and run `./dji-ppk download`
-(or `run`) for each, the orders placed earlier are found on the portal by project name and span and downloaded
-without re-ordering (the portal keeps results for 14 days).
+`<folder>` is the folder name under `FLIGHTS_DIR` (or any path to it). `status` classifies each folder: `order` when
+no base file covers every session, `process` when the base is there, `reprocess` when an input or the base is newer
+than the result, `photos` when photos are still missing, `expired` when the flight is older than 90 days and no base
+file is in the folder, and `done` otherwise. Moving to another machine: copy the flight folders there and START;
+orders placed earlier are found on the portal by project name and span and downloaded without re-ordering (the portal
+keeps results for 14 days).
 
 <details>
 <summary>What the launcher runs</summary>
