@@ -1,198 +1,361 @@
-#!/usr/bin/env bash
-# dji-ppk: one entry point for the whole flow. Runs on the host, drives the two containers.
-#
-#   ./dji-ppk                     interactive menu: status table, tick folders, apply run / download / order / process
-#   ./dji-ppk status              one line per flight folder: sessions, photos, base, result, next step
-#   ./dji-ppk run <folder>        order the Virtual RINEX if needed, then process (geo.txt & co)
-#   ./dji-ppk run --all           the same for every folder that is not done yet
-#   ./dji-ppk order <folder>      order + download only            ./dji-ppk process <folder>   process only
-#   ./dji-ppk download <folder>   download an order that already exists on the portal (never orders)
-#   ./dji-ppk window <folder>     print the order parameters       ./dji-ppk dry-run <folder>   fill the form, do not submit
-#   ./dji-ppk watch               start the folder watcher and follow its log
-#   ./dji-ppk build               (re)build both images
-#
-# <folder> is a folder name under FLIGHTS_DIR (see .env), or any path to it.
-set -euo pipefail
-cd "$(dirname "$0")"
+#!/usr/bin/env python3
+"""dji-ppk: one entry point for the whole flow. Runs on the host and drives the two containers.
 
-if [[ -t 1 ]]; then B=$'\e[1m'; D=$'\e[2m'; G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; N=$'\e[0m'; else B=""; D=""; G=""; Y=""; R=""; N=""; fi
+  ./dji-ppk                     interactive menu: status table, tick folders, apply run / download / order / process
+  ./dji-ppk status              one line per flight folder: sessions, photos, base, result, next step (--json)
+  ./dji-ppk run <folder>...     order the Virtual RINEX if needed, then process (geo.txt & co in the folder)
+  ./dji-ppk run --all           the same for every folder whose next step is order / process / reprocess
+  ./dji-ppk order <folder>      order + download the base only         ./dji-ppk download <folder>  download an existing order (never orders)
+  ./dji-ppk process <folder>    process only                           ./dji-ppk window <folder>    print the order parameters
+  ./dji-ppk dry-run <folder>    fill the portal form, do not submit    ./dji-ppk watch              start the watcher, follow its log
+  ./dji-ppk build               (re)build both images
 
-die() { echo "${R}error:${N} $*" >&2; exit 1; }
-compose() { docker compose --profile cli "$@"; }
-image_tag() { local ref; ref="$(grep -E '^RTKLIB_REF=' .env 2>/dev/null | cut -d= -f2)"; echo "dji-ppk:${ref:-v2.5.1}"; }
-ensure_images() { # build missing images with visible progress; a silent auto-build looks like a hang (RTKLIB compiles for minutes)
-  local -a need=()
-  docker image inspect "$(image_tag)" >/dev/null 2>&1 || need+=(ppk)
-  if [[ "${1:-}" == "estpos" ]]; then docker image inspect dji-ppk-estpos >/dev/null 2>&1 || need+=(ppk-estpos); fi
-  if (( ${#need[@]} )); then
-    echo "${Y}image(s) not built yet: ${need[*]}. Building now (first run compiles RTKLIB, several minutes) ...${N}" >&2
-    docker compose --profile cli build "${need[@]}" || die "image build failed"
-  fi
-}
-# -T: no pseudo-TTY, stdin from /dev/null: the containers must never swallow the keystrokes of the menu
-ppk() { ensure_images; compose run --rm -T ppk "$@" </dev/null; }
-estpos() { ensure_images estpos; compose run --rm -T ppk-estpos "$@" </dev/null; }
+<folder> is a folder name under FLIGHTS_DIR (see .env) or any path to it. Only python3 and docker compose are needed.
+"""
+from __future__ import annotations
 
-need_env() {
-  [[ -f .env ]] || die ".env is missing: cp .env.example .env and set FLIGHTS_DIR (and ESTPOS_USER / ESTPOS_PASSWORD for ordering)"
-  command -v docker >/dev/null || die "docker is not installed"
-  docker compose version >/dev/null 2>&1 || die "docker compose (v2 plugin) is not available"
-  command -v python3 >/dev/null || die "python3 is needed on the host for the menu"
-}
-need_creds() {
-  grep -qE '^ESTPOS_USER=.+' .env && grep -qE '^ESTPOS_PASSWORD=.+' .env || die "ESTPOS_USER / ESTPOS_PASSWORD are not set in .env (needed to order a Virtual RINEX)"
-}
-cpath() { # folder name or host path -> path inside the containers
-  local f="${1%/}"
-  echo "/data/flights/$(basename "$f")"
-}
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
 
-cmd_status() { need_env; ppk status /data/flights "$@"; }
+ROOT = Path(__file__).resolve().parent
+os.chdir(ROOT)
 
-STATUS_JSON=""
-scan() { # one container run; the table and the menu list are both rendered from this JSON
-  echo "${D}scanning FLIGHTS_DIR ...${N}" >&2
-  STATUS_JSON="$(ppk status /data/flights --json 2>/dev/null)" || die "cannot list flights (is the image built? ./dji-ppk build)"
-}
-render_table() {
-  python3 -c '
-import json, sys
-rows = json.load(sys.stdin)
-if not rows:
-    print("no flight folders (OBS/NAV/MRK triplets) found"); sys.exit()
-head = ["folder", "sess/photos", "flown", "base", "result", "next"]
-table = [head] + [[r["folder"], str(r["sessions"]) + "/" + str(r["photos"]), r["flown"], r["base"], r["result"], r["next"]] for r in rows]
-w = [max(len(str(x[i])) for x in table) for i in range(len(head))]
-for n, row in enumerate(table):
-    print("  ".join(str(c).ljust(k) for c, k in zip(row, w)).rstrip())
-    if n == 0: print("  ".join("-" * k for k in w))
-exp = [r["folder"] for r in rows if r["next"] == "expired"]
-if exp: print("\nexpired (older than 90 days, ESTPOS has no RINEX for these): " + ", ".join(exp))' <<< "$STATUS_JSON"
-}
-pending_folders() { # names of folders whose next step is not "done"
-  python3 -c '
-import json, sys
-for r in json.load(sys.stdin):
-    if r["next"] not in ("done", "photos", "expired"):
-        print(r["folder"])' <<< "$STATUS_JSON"
-}
-all_folders() {
-  python3 -c '
-import json, sys
-for r in json.load(sys.stdin):
-    print(r["folder"] + "\t" + r["next"])' <<< "$STATUS_JSON"
-}
+COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+_C = {"bold": "1", "dim": "2", "red": "31", "green": "32", "yellow": "33", "cyan": "36", "magenta": "35"}
+NEXT_STYLE = {"done": ("green",), "order": ("yellow", "bold"), "photos": ("yellow",), "process": ("cyan", "bold"),
+              "reprocess": ("cyan",), "expired": ("red", "bold")}
+PENDING = ("order", "process", "reprocess")
+FLIGHTS = "/data/flights"
 
-cmd_order()    { need_env; need_creds; estpos estpos-order "$(cpath "$1")" "${@:2}"; }
-cmd_download() { need_env; need_creds; estpos estpos-download "$(cpath "$1")" "${@:2}"; }
-cmd_dryrun()  { need_env; need_creds; estpos estpos-order "$(cpath "$1")" --dry-run "${@:2}"; }
-cmd_window()  { need_env; ppk estpos-window "$(cpath "$1")" "${@:2}"; }
-cmd_process() { need_env; ppk process "$(cpath "$1")" "${@:2}"; }
 
-cmd_run() {
-  need_env
-  local f="$1"
-  echo "${B}== $f: base file${N}"
-  if grep -qE '^ESTPOS_USER=.+' .env; then
-    estpos estpos-order "$(cpath "$f")" || { echo "${R}ordering the Virtual RINEX failed for $f${N}" >&2; return 1; }
-  else
-    echo "${Y}ESTPOS credentials not set in .env: skipping the order step, using whatever base file is in the folder${N}"
-  fi
-  echo "${B}== $f: processing${N}"
-  ppk process "$(cpath "$f")" || { echo "${R}processing failed for $f${N}" >&2; return 1; }
-}
+def c(text: str, *styles: str) -> str:
+    return "".join(f"\033[{_C[s]}m" for s in styles) + text + "\033[0m" if COLOR and styles else text
 
-cmd_run_all() {
-  [[ -n "$STATUS_JSON" ]] || scan
-  local list; list="$(pending_folders)"
-  [[ -n "$list" ]] || { echo "${G}nothing to do: every folder is done${N}"; return 0; }
-  while IFS= read -r f; do cmd_run "$f"; done <<< "$list"
-}
 
-cmd_watch() { need_env; docker compose up -d ppk-watch && docker compose logs -f ppk-watch; }
-cmd_build() { compose build ppk ppk-estpos; }
+def die(msg: str, code: int = 1) -> None:
+    print(c("error: ", "red", "bold") + msg, file=sys.stderr)
+    sys.exit(code)
 
-menu() {
-  need_env
-  local -a names nexts sel
-  local rescan=1 input tok i
-  while true; do
-    if (( rescan )); then
-      echo; echo "${B}Flight folders under FLIGHTS_DIR${N}"
-      scan
-      names=(); nexts=(); sel=()
-      while IFS=$'\t' read -r n x; do [[ -n "$n" ]] && { names+=("$n"); nexts+=("$x"); }; done < <(all_folders)
-      for i in "${!names[@]}"; do   # pre-tick everything that has a sensible next step
-        case "${nexts[$i]}" in order|process|reprocess) sel[$i]=1 ;; *) sel[$i]=0 ;; esac
-      done
-      rescan=0
-    fi
-    (( ${#names[@]} )) || { echo "no flight folders found under FLIGHTS_DIR"; exit 0; }
-    echo
-    render_table
-    echo "${D}next: order = no base file yet, photos = photos still missing in the folder (copy finished?), process/reprocess = run it,${N}"
-    echo "${D}      done = nothing to do, expired = older than 90 days, ESTPOS has no RINEX for it any more (only a base file already in the folder helps)${N}"
-    echo
-    for i in "${!names[@]}"; do
-      local mark=" "; (( sel[$i] )) && mark="${G}x${N}"
-      printf "  %2d) [%s] %s  ${D}(next: %s)${N}\n" "$((i + 1))" "$mark" "${names[$i]}" "${nexts[$i]}"
-    done
-    echo
-    echo "${B}Tick:${N} numbers toggle (e.g. ${B}1 3${N} or ${B}2-4${N}), ${B}a${N} = all pending, ${B}A${N} = all, ${B}n${N} = none"
-    echo "${B}Then:${N} ${B}r${N} = run ticked (order base if needed + process)   ${B}d${N} = download base only   ${B}o${N} = order base only"
-    echo "      ${B}p${N} = process only   ${B}w${N} = show order parameters   ${B}s${N} = rescan   ${B}W${N} = start the watcher   ${B}q${N} = quit"
-    read -r -p "> " input || exit 0
-    local -a picked=()
-    for i in "${!names[@]}"; do (( sel[$i] )) && picked+=("${names[$i]}"); done
-    case "$input" in
-      q|Q) exit 0 ;;
-      s|S) rescan=1; continue ;;
-      W)   cmd_watch; rescan=1; continue ;;
-      a)   for i in "${!names[@]}"; do case "${nexts[$i]}" in order|process|reprocess) sel[$i]=1 ;; *) sel[$i]=0 ;; esac; done; continue ;;
-      A)   for i in "${!names[@]}"; do sel[$i]=1; done; continue ;;
-      n|N) for i in "${!names[@]}"; do sel[$i]=0; done; continue ;;
-      r|d|o|p|w)
-        (( ${#picked[@]} )) || { echo "${Y}nothing ticked${N}"; continue; }
-        for f in "${picked[@]}"; do
-          echo; echo "${B}==== $f ====${N}"
-          case "$input" in
-            r) cmd_run "$f" || echo "${R}$f failed${N}" ;;
-            d) cmd_download "$f" || echo "${R}$f failed${N}" ;;
-            o) cmd_order "$f" || echo "${R}$f failed${N}" ;;
-            p) cmd_process "$f" || echo "${R}$f failed${N}" ;;
-            w) cmd_window "$f" || echo "${R}$f failed${N}" ;;
-          esac
-        done
-        [[ "$input" == "w" ]] || rescan=1
-        continue ;;
-      *)
-        for tok in $input; do
-          if [[ "$tok" =~ ^[0-9]+$ ]]; then
-            (( tok >= 1 && tok <= ${#names[@]} )) && sel[$((tok - 1))]=$(( 1 - sel[$((tok - 1))] )) || echo "${Y}no folder $tok${N}"
-          elif [[ "$tok" =~ ^([0-9]+)-([0-9]+)$ ]]; then
-            for (( i = BASH_REMATCH[1]; i <= BASH_REMATCH[2]; i++ )); do
-              (( i >= 1 && i <= ${#names[@]} )) && sel[$((i - 1))]=$(( 1 - sel[$((i - 1))] ))
-            done
-          else
-            echo "${Y}unknown input '$tok'${N}"
-          fi
-        done ;;
-    esac
-  done
-}
 
-case "${1:-}" in
-  "")            menu ;;
-  status)        shift; cmd_status "$@" ;;
-  run)           shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk run <folder> | --all"
-                 if [[ "$1" == "--all" ]]; then cmd_run_all; else cmd_run "$1"; fi ;;
-  order)         shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk order <folder>"; cmd_order "$@" ;;
-  download)      shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk download <folder>"; cmd_download "$@" ;;
-  process)       shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk process <folder>"; cmd_process "$@" ;;
-  window)        shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk window <folder>"; cmd_window "$@" ;;
-  dry-run)       shift; [[ $# -ge 1 ]] || die "usage: ./dji-ppk dry-run <folder>"; cmd_dryrun "$@" ;;
-  watch)         cmd_watch ;;
-  build)         cmd_build ;;
-  -h|--help|help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *)             die "unknown command '$1' (try ./dji-ppk --help)" ;;
-esac
+# ----------------------------------------------------------------------------- environment
+
+def read_env() -> dict[str, str]:
+    out: dict[str, str] = {}
+    p = ROOT / ".env"
+    if p.exists():
+        for line in p.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                out[k.strip()] = v.strip().strip('"').strip("'")
+    return out
+
+
+def need_env() -> dict[str, str]:
+    if not (ROOT / ".env").exists():
+        die(".env is missing: cp .env.example .env and set FLIGHTS_DIR (and ESTPOS_USER / ESTPOS_PASSWORD for ordering)")
+    if subprocess.run(["docker", "compose", "version"], capture_output=True).returncode != 0:
+        die("docker compose (v2 plugin) is not available; install Docker with the compose plugin")
+    return read_env()
+
+
+def need_creds(env: dict[str, str]) -> None:
+    if not has_creds(env):
+        die("ESTPOS_USER / ESTPOS_PASSWORD are not set in .env (needed to order or download a Virtual RINEX)")
+
+
+def has_creds(env: dict[str, str]) -> bool:
+    return bool(env.get("ESTPOS_USER") and env.get("ESTPOS_PASSWORD"))
+
+
+def image_exists(tag: str) -> bool:
+    return subprocess.run(["docker", "image", "inspect", tag], capture_output=True).returncode == 0
+
+
+def ensure_images(env: dict[str, str], estpos: bool = False) -> None:
+    """Build missing images with visible output; a silent auto-build looks like a hang (RTKLIB compiles for minutes)."""
+    need = []
+    if not image_exists(f"dji-ppk:{env.get('RTKLIB_REF', 'v2.5.1')}"):
+        need.append("ppk")
+    if estpos and not image_exists("dji-ppk-estpos"):
+        need.append("ppk-estpos")
+    if need:
+        print(c(f"image(s) not built yet: {' '.join(need)}. Building now (first run compiles RTKLIB, several minutes) ...", "yellow"))
+        if compose("build", *need).returncode != 0:
+            die("image build failed")
+
+
+# ----------------------------------------------------------------------------- docker
+
+def compose(*args: str, capture: bool = False) -> subprocess.CompletedProcess:
+    cmd = ["docker", "compose", "--profile", "cli", *args]
+    return subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=capture, text=capture)
+
+
+def run_in(service: str, env: dict[str, str], *args: str, capture: bool = False) -> subprocess.CompletedProcess:
+    # -T: no pseudo-TTY; stdin detached: containers must never swallow the keystrokes of the menu
+    ensure_images(env, estpos=(service == "ppk-estpos"))
+    return compose("run", "--rm", "-T", "-e", f"PPK_COLOR={1 if COLOR and not capture else 0}", service, *args, capture=capture)
+
+
+def cpath(folder: str) -> str:
+    return f"{FLIGHTS}/{Path(folder.rstrip('/')).name}"
+
+
+# ----------------------------------------------------------------------------- status
+
+def status_rows(env: dict[str, str]) -> list[dict]:
+    print(c(f"scanning {env.get('FLIGHTS_DIR', '.')} ...", "dim"), file=sys.stderr, flush=True)
+    r = run_in("ppk", env, "status", FLIGHTS, "--json", capture=True)
+    if r.returncode != 0:
+        die("cannot list flights:\n" + (r.stderr or r.stdout))
+    try:
+        return json.loads(r.stdout)
+    except json.JSONDecodeError:
+        die("unexpected status output:\n" + r.stdout[:500])
+    return []
+
+
+def render_table(rows: list[dict]) -> str:
+    if not rows:
+        return "no flight folders (OBS/NAV/MRK triplets) found under FLIGHTS_DIR"
+    head = ["folder", "sess/photos", "flown", "base", "result", "next"]
+    table = [head] + [[r["folder"], f"{r['sessions']}/{r['photos']}", r["flown"], r["base"], r["result"], r["next"]] for r in rows]
+    widths = [max(len(str(x[i])) for x in table) for i in range(len(head))]
+    out = []
+    for n, row in enumerate(table):
+        cells = [str(v).ljust(w) for v, w in zip(row, widths)]
+        if n == 0:
+            cells = [c(x, "bold") for x in cells]
+        elif row[-1] in NEXT_STYLE:
+            cells[-1] = c(cells[-1].rstrip(), *NEXT_STYLE[row[-1]])
+        out.append("  ".join(cells).rstrip())
+        if n == 0:
+            out.append("  ".join("-" * w for w in widths))
+    return "\n".join(out)
+
+
+def legend() -> str:
+    return ("next: " + c("order", *NEXT_STYLE["order"]) + " = no base file yet, " + c("photos", *NEXT_STYLE["photos"])
+            + " = photos still missing in the folder (copy finished?), " + c("process", *NEXT_STYLE["process"]) + "/"
+            + c("reprocess", *NEXT_STYLE["reprocess"]) + " = run it,\n      " + c("done", *NEXT_STYLE["done"])
+            + " = nothing to do, " + c("expired", *NEXT_STYLE["expired"])
+            + " = older than 90 days, ESTPOS has no RINEX for it any more (only a base file already in the folder helps)")
+
+
+# ----------------------------------------------------------------------------- actions
+
+def banner(text: str) -> None:
+    print(c(f"\n==== {text} ====", "bold", "magenta"))
+
+
+def act_order(env, folder, *extra):
+    need_creds(env)
+    return run_in("ppk-estpos", env, "estpos-order", cpath(folder), *extra).returncode
+
+
+def act_download(env, folder, *extra):
+    need_creds(env)
+    return run_in("ppk-estpos", env, "estpos-download", cpath(folder), *extra).returncode
+
+
+def act_dryrun(env, folder, *extra):
+    need_creds(env)
+    return run_in("ppk-estpos", env, "estpos-order", cpath(folder), "--dry-run", *extra).returncode
+
+
+def act_window(env, folder, *extra):
+    return run_in("ppk", env, "estpos-window", cpath(folder), *extra).returncode
+
+
+def act_process(env, folder, *extra):
+    return run_in("ppk", env, "process", cpath(folder), *extra).returncode
+
+
+def act_run(env: dict[str, str], folder: str) -> int:
+    print(c(f"== {folder}: base file", "bold"))
+    if has_creds(env):
+        if run_in("ppk-estpos", env, "estpos-order", cpath(folder)).returncode != 0:
+            print(c(f"✘ ordering the Virtual RINEX failed for {folder}", "red", "bold"), file=sys.stderr)
+            return 1
+    else:
+        print(c("ESTPOS credentials not set in .env: skipping the order step, using whatever base file is in the folder", "yellow"))
+    print(c(f"== {folder}: processing", "bold"))
+    if run_in("ppk", env, "process", cpath(folder)).returncode != 0:
+        print(c(f"✘ processing failed for {folder}", "red", "bold"), file=sys.stderr)
+        return 1
+    print(c(f"✔ {folder} finished", "green", "bold"))
+    return 0
+
+
+def act_run_all(env: dict[str, str], rows: list[dict] | None = None) -> int:
+    rows = rows or status_rows(env)
+    pending = [r["folder"] for r in rows if r["next"] in PENDING]
+    if not pending:
+        print(c("nothing to do: every folder is done, waiting for photos, or expired", "green"))
+        return 0
+    rc = 0
+    for f in pending:
+        banner(f)
+        rc = max(rc, act_run(env, f))
+    return rc
+
+
+def act_watch(env: dict[str, str]) -> int:
+    ensure_images(env)
+    subprocess.run(["docker", "compose", "up", "-d", "ppk-watch"])
+    try:
+        return subprocess.run(["docker", "compose", "logs", "-f", "ppk-watch"]).returncode
+    except KeyboardInterrupt:
+        print()
+        return 0
+
+
+def act_build() -> int:
+    return compose("build", "ppk", "ppk-estpos").returncode
+
+
+# ----------------------------------------------------------------------------- menu
+
+def parse_toggles(text: str, n: int) -> list[int] | None:
+    """'1 3' or '2-4' -> zero-based indexes; None when the text is not a toggle expression."""
+    idx: list[int] = []
+    for tok in text.split():
+        m = re.fullmatch(r"(\d+)(?:-(\d+))?", tok)
+        if not m:
+            return None
+        a, b = int(m.group(1)), int(m.group(2) or m.group(1))
+        for i in range(a, b + 1):
+            if 1 <= i <= n:
+                idx.append(i - 1)
+            else:
+                print(c(f"no folder {i}", "yellow"))
+    return idx
+
+
+def menu(env: dict[str, str]) -> None:
+    rows = status_rows(env)
+    ticked = [r["next"] in PENDING for r in rows]
+
+    def rescan():
+        nonlocal rows, ticked
+        rows = status_rows(env)
+        ticked = [r["next"] in PENDING for r in rows]
+
+    while True:
+        if not rows:
+            print("no flight folders found under FLIGHTS_DIR")
+            return
+        print("\n" + c("Flight folders under FLIGHTS_DIR", "bold"))
+        print(render_table(rows))
+        print(legend())
+        print()
+        for i, r in enumerate(rows):
+            mark = c("x", "green") if ticked[i] else " "
+            print(f"  {i + 1:2d}) [{mark}] {r['folder']}  " + c(f"(next: {r['next']})", "dim"))
+        print()
+        print(c("Tick:", "bold") + " numbers toggle (" + c("1 3", "bold") + " or " + c("2-4", "bold") + "), "
+              + c("a", "bold") + " = all pending, " + c("A", "bold") + " = all, " + c("n", "bold") + " = none")
+        print(c("Then:", "bold") + " " + c("r", "bold") + " = run ticked (order base if needed + process)   "
+              + c("d", "bold") + " = download base only   " + c("o", "bold") + " = order base only   " + c("p", "bold") + " = process only")
+        print("      " + c("w", "bold") + " = show order parameters   " + c("s", "bold") + " = rescan   "
+              + c("W", "bold") + " = start the watcher   " + c("q", "bold") + " = quit")
+        try:
+            text = input(c("> ", "bold")).strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if text in ("q", "Q"):
+            return
+        if text in ("s", "S"):
+            rescan()
+        elif text == "W":
+            act_watch(env)
+            rescan()
+        elif text == "a":
+            ticked = [r["next"] in PENDING for r in rows]
+        elif text == "A":
+            ticked = [True] * len(rows)
+        elif text in ("n", "N"):
+            ticked = [False] * len(rows)
+        elif text in ("r", "d", "o", "p", "w"):
+            picked = [r["folder"] for r, t in zip(rows, ticked) if t]
+            if not picked:
+                print(c("nothing ticked", "yellow"))
+                continue
+            action = {"r": act_run, "d": act_download, "o": act_order, "p": act_process, "w": act_window}[text]
+            for f in picked:
+                banner(f)
+                if action(env, f) != 0:
+                    print(c(f"✘ {f} failed", "red", "bold"))
+            if text != "w":
+                rescan()
+        else:
+            toggles = parse_toggles(text, len(rows))
+            if toggles is None:
+                print(c(f"unknown input {text!r}", "yellow"))
+                continue
+            for i in toggles:
+                ticked[i] = not ticked[i]
+
+
+# ----------------------------------------------------------------------------- main
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="dji-ppk", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd")
+    s = sub.add_parser("status")
+    s.add_argument("--json", action="store_true")
+    s = sub.add_parser("run")
+    s.add_argument("folders", nargs="*")
+    s.add_argument("--all", action="store_true")
+    for name in ("order", "download", "process", "window", "dry-run"):
+        s = sub.add_parser(name)
+        s.add_argument("folder")
+        s.add_argument("extra", nargs=argparse.REMAINDER)
+    sub.add_parser("watch")
+    sub.add_parser("build")
+    a = ap.parse_args(argv)
+
+    if a.cmd is None:
+        menu(need_env())
+        return 0
+    if a.cmd == "build":
+        return act_build()
+    env = need_env()
+    if a.cmd == "status":
+        rows = status_rows(env)
+        if a.json:
+            print(json.dumps(rows, indent=1))
+        else:
+            print(render_table(rows))
+            print()
+            print(legend())
+        return 0
+    if a.cmd == "watch":
+        return act_watch(env)
+    if a.cmd == "run":
+        if a.all:
+            return act_run_all(env)
+        if not a.folders:
+            die("usage: ./dji-ppk run <folder>... | --all")
+        rc = 0
+        for f in a.folders:
+            banner(f)
+            rc = max(rc, act_run(env, f))
+        return rc
+    fn = {"order": act_order, "download": act_download, "process": act_process, "window": act_window, "dry-run": act_dryrun}[a.cmd]
+    return fn(env, a.folder, *a.extra)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except KeyboardInterrupt:
+        print()
+        sys.exit(130)

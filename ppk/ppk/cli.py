@@ -22,6 +22,7 @@ from .pos import read_pos
 from .rinex import prepare_obs, read_header, scan_obs_span, find_base_candidates, find_nav_files, stale_nav_systems
 from .rtklib import rtklib_version, run_rnx2rtkp, write_conf
 from .timeutil import span_local
+from . import ui
 
 log = logging.getLogger("ppk")
 
@@ -82,11 +83,12 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
             stale.unlink()
 
     mrk = parse_mrk(flight.mrk)
-    log.info("%s: %d camera events in %s, %d images", flight.name, len(mrk), flight.mrk.name, len(flight.images))
+    log.info(ui.step(1, 5, "%s: %d camera events in %s, %d images"), flight.name, len(mrk), flight.mrk.name, len(flight.images))
     missing_images = [e.id for e in mrk if e.id not in flight.images]
     if missing_images:
         log.warning("%d MRK events have no matching image file (first: %s)", len(missing_images), missing_images[:5])
 
+    log.info(ui.step(2, 5, "base %s: unpacking and checking"), Path(base).name)
     base_plain = prepare_obs(base, work)
     base_hdr = read_header(base_plain)
     if base_plain.resolve() != Path(base).resolve():
@@ -112,6 +114,7 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     if any(c.level == "FAIL" for c in checks):
         raise RuntimeError("base file failed validation, see log")
 
+    log.info(ui.step(3, 5, "injecting %d exposure events into the rover observations"), len(mrk))
     rover_events = work / (flight.stem + "_events.obs")
     stats = write_obs_with_events(flight.obs, rover_events, [e.time for e in mrk])
     log.info("injected %d event epochs into %s (%d obs epochs)", stats["inserted"], rover_events.name, stats["epochs"])
@@ -124,7 +127,7 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     conf_used = write_conf(conf, out_dir / f"{prefix}rtklib_used.conf", overrides)
     out_pos = out_dir / f"{flight.stem}_trajectory.pos"
     navs = [flight.nav] + list(extra_nav or []) + base_navs
-    log.info("running %s ...", rtklib_version())
+    log.info(ui.step(4, 5, "running %s ..."), rtklib_version())
     res = run_rnx2rtkp(conf_used, out_pos, rover_events, base_plain, navs, out_dir / f"{prefix}rtklib.log")
     log.info("rnx2rtkp finished in %.1f s (exit %d)", res.seconds, res.returncode)
     if not res.events_path.exists() or not res.pos_path.exists():
@@ -136,6 +139,7 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     if unmatched:
         log.warning("%d MRK events have no RTKLIB solution (ids %s ...)", len(unmatched), [e.id for e in unmatched][:5])
 
+    log.info(ui.step(5, 5, "writing outputs"))
     csv_path = out_dir / f"{prefix}events.csv"
     write_events_csv(csv_path, matched)
     n_geo = write_geo_txt(out_dir / f"{prefix}geo.txt", matched, with_accuracy=geo_accuracy, fixed_only=fixed_only)
@@ -156,8 +160,11 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     }
     write_summary(out_dir / f"{prefix}summary.json", summary)
     ev = summary["events"]
-    log.info("events: %d fixed, %d float, %d other, %d unsolved of %d; trajectory fix ratio %.1f%%",
-             ev["fix"], ev["float"], ev["other"], ev["unsolved"], len(mrk), 100 * traj.fix_ratio)
+    fixed_pct = 100 * ev["fix"] / len(mrk) if mrk else 0.0
+    verdict = f"{ev['fix']}/{len(mrk)} photos fixed ({ui.pct(fixed_pct)}), trajectory {ui.pct(100 * traj.fix_ratio)} fixed"
+    if ev["float"] or ev["other"] or ev["unsolved"]:
+        verdict += f"; {ev['float']} float, {ev['other']} other, {ev['unsolved']} unsolved"
+    log.info("%s", ui.ok(verdict) if fixed_pct >= 99 else ui.warn(verdict) if fixed_pct >= 95 else ui.bad(verdict))
 
     quality = solution_quality(matched, len(mrk), traj.rows)
     summary["quality"] = quality
@@ -170,10 +177,10 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     own = [r for r in refs if r.name.startswith(flight.stem)]
     refs = own or ([] if prefix else refs)  # several sessions: only a reference named after this session counts
     print()
-    print(format_quality(quality, flight.name, Path(base).name, baseline_km, refs[-1].name if refs else None))
+    print(ui.colorize_report(format_quality(quality, flight.name, Path(base).name, baseline_km, refs[-1].name if refs else None)))
     rtk = rtk_vs_ppk(matched)
     summary["rtk_vs_ppk"] = rtk
-    print(format_rtk_vs_ppk(rtk))
+    print(ui.colorize_report(format_rtk_vs_ppk(rtk)))
     in_short = format_in_short(rtk, quality)
     (out_dir / f"{prefix}accuracy.txt").write_text(in_short + "\n")
     if refs:
@@ -182,8 +189,8 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
         report = format_report(cmp_res, f"ours vs reference {refs[-1].name}")
         (out_dir / f"{prefix}compare_report.txt").write_text(report + "\n")
         summary["compare"] = {"reference": refs[-1].name, **cmp_res.as_dict()}
-        print(report)
-    print(in_short)
+        print(ui.colorize_report(report))
+    print(ui.colorize_report(in_short))
     write_summary(out_dir / f"{prefix}summary.json", summary)
     if not keep_work:
         shutil.rmtree(work, ignore_errors=True)
@@ -235,7 +242,7 @@ def process_sessions(flights: list[Flight], bases: list[Path], out_dir: Path, co
     all_matched: list = []
     summaries = []
     for i, (fl, base) in enumerate(zip(flights, bases), 1):
-        log.info("=== session %d/%d: %s ===", i, len(flights), fl.stem)
+        log.info("%s", ui.c(f"── session {i}/{len(flights)}: {fl.stem} ──", "bold", "magenta"))
         summaries.append(process_flight(fl, base, out_dir, conf, overrides, geo_accuracy, fixed_only, keep_work,
                                         extra_nav, prefix=f"{fl.stem}_", matched_out=all_matched))
     all_matched.sort(key=lambda e: e.time)
@@ -393,9 +400,9 @@ def _report_downloaded_base(path: Path, flight: Flight, flights: list[Flight] | 
     for c in checks:
         if "ANTEX" in c.message and not os.environ.get("PPK_ANTEX"):
             continue  # the portal image has no ANTEX file; `ppk process` checks the antenna in the processing image
-        print(f"  [{c.level:>4}] {c.message}")
+        print(ui.colorize_report(f"  [{c.level:>4}] {c.message}"))
     worst = "FAIL" if any(c.level == "FAIL" for c in checks) else "PASS"
-    print(f"Overall: {worst}")
+    print(ui.colorize_report(f"Overall: {worst}"))
     print(f"\nNext: ppk process {flight.directory}   (or wait for the watcher)")
     return 1 if worst == "FAIL" else 0
 
@@ -407,9 +414,9 @@ def cmd_check_base(a: argparse.Namespace) -> int:
     hdr, checks = check_base(plain, flight, Path(a.antex) if a.antex else None)
     print(f"Base file: {a.base}")
     for c in checks:
-        print(f"  [{c.level:>4}] {c.message}")
+        print(ui.colorize_report(f"  [{c.level:>4}] {c.message}"))
     worst = "FAIL" if any(c.level == "FAIL" for c in checks) else "WARN" if any(c.level == "WARN" for c in checks) else "PASS"
-    print(f"Overall: {worst}")
+    print(ui.colorize_report(f"Overall: {worst}"))
     return 1 if worst == "FAIL" else 0
 
 
@@ -439,7 +446,12 @@ def cmd_process(a: argparse.Namespace) -> int:
         out_dir = Path(a.out_dir) / a.name
     summary = process_sessions(flights, bases, out_dir, Path(a.conf), _parse_overrides(a.set), a.geo_accuracy,
                                a.fixed_only, a.keep_work, [Path(n) for n in (a.nav or [])])
-    print(f"\nResults in {out_dir}: geo.txt ({summary['geo_txt_rows']} rows), events.csv, summary.json, accuracy.txt")
+    ev = summary["events"]
+    print()
+    print(ui.ok(f"{flights[0].name}: {ev['fix']}/{ev['mrk']} photos fixed, geo.txt has {summary['geo_txt_rows']} rows")
+          if ev["fix"] == ev["mrk"] else ui.warn(f"{flights[0].name}: {ev['fix']}/{ev['mrk']} photos fixed, {ev['unsolved']} unsolved, "
+                                                 f"geo.txt has {summary['geo_txt_rows']} rows"))
+    print(ui.c(f"  in {out_dir}: geo.txt, events.csv, summary.json, accuracy.txt", "dim"))
     return 0
 
 
@@ -471,7 +483,13 @@ def cmd_status(a: argparse.Namespace) -> int:
     from .status import scan_status, format_status, status_json
     logging.getLogger("ppk.watch").setLevel(logging.WARNING)  # keep "candidate skipped" chatter out of the table
     rows = scan_status(Path(a.root), Path(a.base_dir) if a.base_dir else None)
-    print(status_json(rows) if a.json else format_status(rows))
+    if a.json:
+        print(status_json(rows))
+    else:
+        text = format_status(rows)
+        for key in ui.NEXT_COLORS:
+            text = re.sub(rf"(\S)(\s+)({key})$", lambda m: m.group(1) + m.group(2) + ui.colorize_next(m.group(3)), text, flags=re.M)
+        print(text)
     return 0
 
 
@@ -580,8 +598,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
-                        format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
+    handler = logging.StreamHandler()
+    handler.setFormatter(ui.ColorFormatter())
+    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO, handlers=[handler])
     try:
         return args.func(args)
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
