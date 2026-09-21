@@ -30,12 +30,13 @@ class FolderStatus:
     result: str
     next: str
     rinex_days_left: int | None = None
+    accuracy: str = ""  # "41 cm → 0.4 cm": typical horizontal photo error as flown (on-board RTK) → after PPK (RTKLIB estimate)
 
     def row(self) -> list[str]:
         flown = self.flown
-        if self.rinex_days_left is not None and self.rinex_days_left <= RETENTION_WARN_DAYS:
-            flown += f" ({self.rinex_days_left} d left)" if self.rinex_days_left >= 0 else " (RINEX expired)"
-        return [self.folder, f"{self.sessions}/{self.photos}", flown, self.base, self.result, self.next]
+        if self.rinex_days_left is not None and 0 <= self.rinex_days_left <= RETENTION_WARN_DAYS:
+            flown += f" ({self.rinex_days_left} d left)"
+        return [self.folder, f"{self.sessions}/{self.photos}", flown, self.base, self.result, self.accuracy, self.next]
 
 
 def _span(flights: list[Flight]) -> tuple[datetime | None, datetime | None]:
@@ -100,9 +101,37 @@ def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None,
     if not base_ok:
         nxt = NEXT_ORDER
         if days_left is not None and days_left < 0:
-            nxt = NEXT_EXPIRED
-            base = f"missing, RINEX no longer available ({-days_left} d past the {RINEX_RETENTION_DAYS}-day limit)"
-    return FolderStatus(directory.name, str(directory), len(flights), photos, flown, base, base_ok, result, nxt, days_left)
+            nxt = NEXT_EXPIRED  # the reason is in the next column; keep the base column short
+    accuracy = accuracy_text(summary_path) if summary_path.exists() else ""
+    return FolderStatus(directory.name, str(directory), len(flights), photos, flown, base, base_ok, result, nxt, days_left, accuracy)
+
+
+def _cm(mm: float | None) -> str:
+    if mm is None:
+        return "?"
+    cm = mm / 10
+    return f"{cm:.0f} cm" if cm >= 10 else f"{cm:.1f} cm"
+
+
+def accuracy_text(summary_path: Path) -> str:
+    """'41 cm → 0.4 cm': typical horizontal error of the photo positions as flown (on-board RTK vs PPK, rms) and
+    RTKLIB's estimated 1-sigma after PPK. For several sessions the worst session is shown."""
+    try:
+        s = json.loads(summary_path.read_text())
+    except (OSError, ValueError):
+        return ""
+    sessions = s.get("session_summaries") or [s]
+    flown, ppk = [], []
+    for ss in sessions:
+        rtk = ss.get("rtk_vs_ppk") or {}
+        if rtk.get("horizontal_error", {}).get("rms_mm") is not None:
+            flown.append(rtk["horizontal_error"]["rms_mm"])
+        q = (ss.get("quality") or {}).get("std_mm", {}).get("horizontal", {})
+        if q.get("median") is not None:
+            ppk.append(q["median"])
+    if not ppk:
+        return ""
+    return (_cm(max(flown)) if flown else "?") + " → " + _cm(max(ppk))
 
 
 def scan_status(root: Path, base_dir: Path | None) -> list[FolderStatus]:
@@ -114,7 +143,7 @@ def scan_status(root: Path, base_dir: Path | None) -> list[FolderStatus]:
 def format_status(rows: list[FolderStatus]) -> str:
     if not rows:
         return "no flight folders (OBS/NAV/MRK triplets) found"
-    head = ["folder", "sess/photos", "flown", "base", "result", "next"]
+    head = ["folder", "sess/photos", "flown", "base", "result", "accuracy flown→PPK", "next"]
     table = [head] + [r.row() for r in rows]
     widths = [max(len(str(row[i])) for row in table) for i in range(len(head))]
     out = []

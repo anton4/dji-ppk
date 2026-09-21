@@ -159,8 +159,9 @@ def status_rows(env: dict[str, str], quiet: bool = False) -> list[dict]:
 def render_table(rows: list[dict]) -> str:
     if not rows:
         return "no flight folders (OBS/NAV/MRK triplets) found under FLIGHTS_DIR"
-    head = ["folder", "sess/photos", "flown", "base", "result", "next"]
-    table = [head] + [[r["folder"], f"{r['sessions']}/{r['photos']}", r["flown"], r["base"], r["result"], r["next"]] for r in rows]
+    head = ["folder", "sess/photos", "flown", "base", "result", "accuracy flown→PPK", "next"]
+    table = [head] + [[r["folder"], f"{r['sessions']}/{r['photos']}", r["flown"], r["base"], r["result"], r.get("accuracy") or "", r["next"]]
+                      for r in rows]
     widths = [max(len(str(x[i])) for x in table) for i in range(len(head))]
     out = []
     for n, row in enumerate(table):
@@ -414,7 +415,7 @@ def _term_width() -> int:
 
 
 def _table_lines(rows: list[dict], ticked: list[bool], cursor: int, width: int) -> list[str]:
-    head = ["", "folder", "sessions/photos", "flown", "base", "status"]
+    head = ["", "folder", "sessions/photos", "flown", "base", "status", "accuracy flown→PPK"]
     data = []
     for r, t in zip(rows, ticked):
         status = r["result"] if r["next"] in ("done", "reprocess") else {"order": "needs RINEX + processing", "process": "needs processing",
@@ -424,10 +425,11 @@ def _table_lines(rows: list[dict], ticked: list[bool], cursor: int, width: int) 
         reason = why_not(r)
         if reason and not t and reason != "done":
             status += f"  [skipped: {reason}]"
-        data.append(["[x]" if t else "[ ]", r["folder"], f"{r['sessions']}/{r['photos']}", r["flown"], r["base"], status])
+        data.append(["[x]" if t else "[ ]", r["folder"], f"{r['sessions']}/{r['photos']}", r["flown"], r["base"], status,
+                     r.get("accuracy") or ""])
     widths = [max(len(str(x[i])) for x in [head] + data) for i in range(len(head))]
     fixed = sum(widths) - widths[5] + 2 * (len(head) - 1) + 2
-    widths[5] = max(12, min(widths[5], width - fixed))
+    widths[5] = max(12, min(widths[5], width - fixed))  # the status column absorbs the terminal width
 
     def cells(row):
         out = []
