@@ -42,6 +42,7 @@ Build any other version with `RTKLIB_REF=<tag|branch> docker compose --profile c
 ## Layout
 
 ```
+dji-ppk              host launcher: menu / run / status, drives the two containers
 Dockerfile           multi-stage build: RTKLIB-EX (rnx2rtkp, convbin, pos2kml), crx2rnx, IGS ANTEX, python package
 Dockerfile.estpos    Playwright + Chromium image for ordering Virtual RINEX on the ESTPOS portal (`ppk-estpos` service)
 compose.yaml         services `ppk` (one-shot CLI), `ppk-estpos` (portal automation), both profile "cli", and `ppk-watch`
@@ -49,7 +50,7 @@ compose.yaml         services `ppk` (one-shot CLI), `ppk-estpos` (portal automat
 config/dji_m4e.conf  RTKLIB options (three frequencies, GPS+SBAS+Galileo+QZSS+BeiDou, fix-and-hold, combined filter)
 config/dji_m4e_l1l2.conf  two-frequency variant
 config/dji_m4e_main.conf  variant for RTKLIB-EX `main` (satellite-count semantics differ from v2.5.1)
-ppk/                 python package `ppk` (stdlib only) with the CLI, parsers and tests
+ppk/                 python package `ppk` (stdlib only) with the CLI, parsers, portal automation, status and tests
 examples/            reference comparison report for the flight above
 ```
 
@@ -59,33 +60,54 @@ Mounted paths inside the containers: `/data/flights` (read-write, results are wr
 ## Usage
 
 ```sh
-cp .env.example .env            # FLIGHTS_DIR = folder that holds the DJI flight folders
-docker compose --profile cli build ppk
+cp .env.example .env     # FLIGHTS_DIR = folder that holds the DJI flight folders; ESTPOS_USER / ESTPOS_PASSWORD
+./dji-ppk build          # builds the processing image and the portal image
+./dji-ppk                # interactive menu
+```
 
-# 1. What to order from ESTPOS for a flight folder
-docker compose --profile cli run --rm ppk estpos-window /data/flights/<flight>
+`./dji-ppk` is a small launcher on the host that drives the two containers. Without arguments it shows one line
+per flight folder and lets you pick what to do:
 
-# 2. Order the Virtual RINEX. Either let Playwright do it (needs ESTPOS_USER / ESTPOS_PASSWORD in .env;
-#    the zip lands in the flight folder and is validated), or do it by hand at https://gnss-rtk.maaamet.ee/sbc
-#    (Järeltöötlemine -> RINEX andmed -> tick "Virtuaalne RINEX", enter the printed values, Esita, then
-#    Tulemused -> Lae alla) and copy the zip into the flight folder.
-docker compose --profile cli run --rm ppk-estpos estpos-order /data/flights/<flight>
-docker compose --profile cli run --rm ppk check-base /data/flights/<flight>/<zip> --flight /data/flights/<flight>   # manual route
+```
+folder                              sess/photos  flown                          base                result                              next
+DJI_202609051108_033_site-a         2/1234       2026-09-05 11:34 - 12:04 EEST  virt248i15.rnx.zip  1234 rows in geo.txt, 1234/1234 fixed  done
+DJI_202609181702_037_site-b         1/1225       2026-09-18 17:19 - 17:38 EEST  missing             not processed                       order
+```
 
-# 3. Process. With the base RINEX copied into the flight folder nothing else is needed; geo.txt, events.csv,
-#    summary.json, the trajectory .pos files and the RTKLIB log land in the flight folder next to the photos.
-docker compose --profile cli run --rm ppk process /data/flights/<flight>
-docker compose --profile cli run --rm ppk process /data/flights/<flight> --base /data/base/<file> --out-dir /data/out --no-in-place  # separate output tree
+For a folder: **run** (order the Virtual RINEX if no base file covers the sessions yet, then process), order only,
+process only, show the order parameters, or a dry run of the order. Non-interactive forms:
 
-# 4. Compare against an Emlid Studio *_events.pos (also done automatically when one is in the flight folder)
-docker compose --profile cli run --rm ppk compare /data/out/<flight> "/data/flights/<flight>/<name>_events.pos"
-docker compose --profile cli run --rm ppk compare --antenna ...   # raw antenna positions, no lever arm
+```sh
+./dji-ppk status                 # the table above (add --json for scripts)
+./dji-ppk run <folder>           # order if needed + process -> geo.txt, events.csv, summary.json, accuracy.txt in the folder
+./dji-ppk run --all              # every folder whose next step is not "done"
+./dji-ppk order|process|window|dry-run <folder>
+./dji-ppk watch                  # start the folder watcher and follow its log
+```
+
+`<folder>` is the folder name under `FLIGHTS_DIR` (or any path to it). The `next` column is `order` when no base
+file covers every session, `process` when the base is there, `reprocess` when an input or the base is newer than
+the result, and `done` otherwise.
+
+<details>
+<summary>What the launcher runs</summary>
+
+```sh
+docker compose --profile cli run --rm ppk status /data/flights
+docker compose --profile cli run --rm ppk-estpos estpos-order /data/flights/<folder>      # Playwright image
+docker compose --profile cli run --rm ppk process /data/flights/<folder>                  # RTKLIB image
+docker compose --profile cli run --rm ppk estpos-window /data/flights/<folder>            # order parameters only
+docker compose --profile cli run --rm ppk check-base /data/flights/<folder>/<zip> --flight /data/flights/<folder>
+docker compose --profile cli run --rm ppk compare /data/flights/<folder> "/data/flights/<folder>/<name>_events.pos"
 ```
 
 Options for `process`: `--conf <file>`, `--set key=value` (repeatable RTKLIB override), `--geo-accuracy`
-(adds horizontal/vertical accuracy columns to `geo.txt`), `--fixed-only`, `--keep-work`, `--in-place` / `--no-in-place`, `--out-dir`, `--name`.
-`PPK_IN_PLACE=1` (the compose default) makes `--in-place` the default for `process` and `watch`.
+(adds horizontal/vertical accuracy columns to `geo.txt`), `--fixed-only`, `--keep-work`, `--in-place` / `--no-in-place`,
+`--out-dir`, `--name`. `PPK_IN_PLACE=1` (the compose default) makes `--in-place` the default for `process` and `watch`.
 Without `--base` the first RINEX file inside the flight folder or under `/data/base` that covers the flight is used.
+Ordering by hand instead: https://gnss-rtk.maaamet.ee/sbc, Järeltöötlemine -> RINEX andmed -> tick "Virtuaalne RINEX",
+enter the values `window` prints, Esita, then Tulemused -> Lae alla, and copy the zip into the flight folder.
+</details>
 
 ### Ordering from the ESTPOS portal automatically
 

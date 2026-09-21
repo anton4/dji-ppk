@@ -372,3 +372,27 @@ def test_find_existing_order():
     other = ResultEntry(datetime(2026, 9, 21, 11, 24), "other", datetime(2026, 9, 5, 11, 15), 1.0, True, "b3", "")
     assert find_existing([shorter, other, same], "demo", order) is same
     assert find_existing([shorter, other], "demo", order) is None
+
+
+def test_folder_status_next_step(tmp_path):
+    import json, os, shutil, time
+    from ppk.discover import load_flights
+    from ppk.status import folder_status, format_status
+    d = tmp_path / "DJI_x"; d.mkdir()
+    shutil.copy(FIX / "sample.obs", d / "DJI_a.OBS"); shutil.copy(FIX / "sample.MRK", d / "DJI_a.MRK"); (d / "DJI_a.NAV").write_text("")
+    flights = load_flights(d)
+    st = folder_status(d, flights, None)
+    assert st.next == "order" and st.base == "missing" and st.sessions == 1
+    # a base header that covers the sample span (07:04-07:24 GPST on 2026-09-12 -> the fixture base spans 06:30-08:29)
+    base = d / "base.26o"
+    hdr = (FIX / "base_header.26o").read_text()
+    base.write_text(hdr + "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 08 29 59.0000000  0  1\n")
+    st = folder_status(d, flights, None)
+    assert st.base == "base.26o" and st.next == "process"
+    (d / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 5, "events": {"fix": 5, "mrk": 5}}))
+    st = folder_status(d, flights, None)
+    assert st.next == "done" and "5 rows" in st.result
+    time.sleep(0.01); os.utime(d / "DJI_a.MRK", None)  # input newer than the result
+    st = folder_status(d, flights, None)
+    assert st.next == "reprocess" and "outdated" in st.result
+    assert "DJI_x" in format_status([st])

@@ -444,6 +444,14 @@ def cmd_watch(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_status(a: argparse.Namespace) -> int:
+    from .status import scan_status, format_status, status_json
+    logging.getLogger("ppk.watch").setLevel(logging.WARNING)  # keep "candidate skipped" chatter out of the table
+    rows = scan_status(Path(a.root), Path(a.base_dir) if a.base_dir else None)
+    print(status_json(rows) if a.json else format_status(rows))
+    return 0
+
+
 def cmd_version(a: argparse.Namespace) -> int:
     print(f"ppk {__version__}")
     print(f"rnx2rtkp: {rtklib_version()}")
@@ -532,6 +540,12 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--fixed-only", action="store_true")
     s.add_argument("--once", action="store_true", help="scan once and exit (for tests)")
     s.set_defaults(func=cmd_watch)
+
+    s = sub.add_parser("status", help="one line per flight folder: sessions, photos, base coverage, result, next step")
+    s.add_argument("root", nargs="?", default=DEFAULT_FLIGHTS_DIR)
+    s.add_argument("--base-dir", default=DEFAULT_BASE_DIR)
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(func=cmd_status)
 
     s = sub.add_parser("version", help="show ppk and RTKLIB versions")
     s.set_defaults(func=cmd_version)
