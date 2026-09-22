@@ -482,8 +482,9 @@ def _table_lines(rows: list[dict], ticked: list[bool], cursor: int, width: int) 
         data.append(["[x]" if t else "[ ]", r["folder"], f"{r['sessions']}/{r['photos']}", r["flown"], r["base"], status,
                      r.get("accuracy") or ""])
     widths = [max(len(str(x[i])) for x in [head] + data) for i in range(len(head))]
+    widths[4] = min(widths[4], 28)  # base names are short; explanations get cut, they repeat in the status column
     fixed = sum(widths) - widths[5] + 2 * (len(head) - 1) + 2
-    widths[5] = max(12, min(widths[5], width - fixed))  # the status column absorbs the terminal width
+    widths[5] = max(30, min(widths[5], width - fixed))  # the status column absorbs the terminal width
 
     def cells(row):
         out = []

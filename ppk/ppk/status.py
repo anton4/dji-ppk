@@ -68,7 +68,7 @@ def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None,
         if all(has_nav_files(b) for b in bases):
             base, base_ok = ", ".join(names), True
         else:
-            base, base_ok = ", ".join(names) + " (no navigation files: GPS unusable, order the zip)", False
+            base, base_ok = ", ".join(names) + " (no nav files)", False  # GPS unusable with the DJI NAV: order the zip
     elif any(bases):
         missing = [f.stem for f, b in zip(flights, bases) if b is None]
         base, base_ok = "partial, missing for " + ", ".join(missing), False

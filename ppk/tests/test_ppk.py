@@ -390,7 +390,7 @@ def test_folder_status_next_step(tmp_path):
     hdr = (FIX / "base_header.26o").read_text()
     base.write_text(hdr + "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 08 29 59.0000000  0  1\n")
     st = folder_status(d, flights, None)
-    assert st.next == "order" and "no navigation files" in st.base  # covers, but GPS would be unusable
+    assert st.next == "order" and "no nav files" in st.base  # covers, but GPS would be unusable
     (d / "base.26n").write_text("")
     st = folder_status(d, flights, None)
     assert st.base == "base.26o" and st.next == "process"
