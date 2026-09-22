@@ -2,9 +2,9 @@
 # Used by the `ppk-estpos` compose service for `ppk estpos-order` / `ppk estpos-download`.
 # The base image ships browsers matching its Playwright version; pin the python package to the same
 # version so no browser download happens and code changes rebuild in seconds.
-FROM mcr.microsoft.com/playwright/python:v1.55.0-noble
+FROM mcr.microsoft.com/playwright/python:v1.63.0-noble
 
-RUN pip install --no-cache-dir playwright==1.55.0
+RUN pip install --no-cache-dir playwright==1.63.0
 
 WORKDIR /app
 COPY ppk /app/ppk
