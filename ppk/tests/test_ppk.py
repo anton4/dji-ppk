@@ -691,13 +691,37 @@ def test_derive_point_arithmetic():
     g = p["ground"]
     dn, de, du = ned_difference(*shown, g["lat"], g["lon"], g["h"])
     assert (dn, de, du) == pytest.approx((0.3, -0.2, 0.1), abs=0.001) and g["pole_m"] == 1.8
+    assert p["antenna"]["h"] == pytest.approx(surveyed[2], abs=1e-6)
     # no shown coordinates, but the phase-centre offset is known from an earlier survey
     p2 = derive_point(bc, surveyed, None, 1.8, 0.14)
-    assert p2["ground"]["h"] == pytest.approx(surveyed[2] - 1.94) and p2["ground"]["lat"] == surveyed[0]
+    assert p2["ground"]["h"] == pytest.approx(surveyed[2] - 1.94) and p2["ground"]["lat"] == pytest.approx(surveyed[0], abs=1e-9)
     # nothing known: only the surveyed phase centre
     p3 = derive_point(None, surveyed, None, None, None)
     assert "ground" not in p3 and "correction_mm" not in p3
+    # an explicit (drone-derived) correction replaces the survey's, the survey's is kept for the record
+    fc = {"north": 300.0, "east": -200.0, "up": 10.0, "horizontal": 360.6}
+    p4 = derive_point(bc, surveyed, shown, 1.8, None, correction=fc)
+    assert p4["correction_mm"] == fc and p4["survey_correction_mm"]["up"] == pytest.approx(100, abs=0.5)
+    assert p4["ground"]["h"] == pytest.approx(shown[2] + 0.010) and p4["antenna"]["h"] == pytest.approx(50.010)
     assert dms_text(59.5, -24.25).startswith("59° 30' 00.0000\" N   24° 15' 00.0000\" W")
+
+
+def test_choose_correction():
+    from ppk.basepoint import choose_correction, flight_correction
+    survey = {"north": -336.0, "east": -162.0, "up": -133.0, "horizontal": 373.0}
+    cc = [{"flight": "DJI_x", "north": -324.0, "east": -158.0, "up": -46.0}, {"flight": "DJI_x", "north": -320.0, "east": -160.0, "up": -50.0}]
+    fl = flight_correction(cc)
+    assert fl["north"] == -322.0 and fl["up"] == -48.0 and fl["flights"] == ["DJI_x"]
+    corr, src, why = choose_correction(survey, fl)
+    assert src == "flight" and corr is fl and "agree" in why  # horizontal parts agree: the drone's own number wins
+    assert choose_correction(survey, fl, "survey")[1] == "survey"
+    assert choose_correction(survey, None)[1] == "survey"
+    assert choose_correction(None, fl)[1] == "none"
+    far = dict(fl, north=-200.0)  # 12 cm off horizontally: another base position during the flight, not trusted
+    corr, src, why = choose_correction(survey, far)
+    assert src == "survey" and "not trusted" in why
+    assert choose_correction(survey, far, "flight")[1] == "flight"
+    assert flight_correction([]) is None
 
 
 def test_basepoint_report_and_status(tmp_path):
@@ -722,7 +746,7 @@ def test_basepoint_report_and_status(tmp_path):
                  "broadcast": {"lat": 58.4, "lon": 26.7, "h": 100.3},
                  "correction_mm": {"north": 412.0, "east": -10.0, "up": -300.0, "horizontal": 412.1}}]
     point = {"surveyed": {"lat": 58.4, "lon": 26.7, "h": 100.0}, "correction_mm": sessions[0]["correction_mm"], "k_m": 0.141,
-             "result_stem": STEM,
+             "result_stem": STEM, "antenna": {"lat": 58.4, "lon": 26.7, "h": 100.0}, "correction_reason": "the survey (static solution)",
              "ground": {"lat": 58.4, "lon": 26.7, "h": 98.059, "pole_m": 1.8, "method": "shown coordinates + correction"}}
     settings = {"name": "yard", "pole_m": 1.8, "shown": {"lat": 58.4, "lon": 26.7, "h": 98.359}}
     cc = [{"flight": "DJI_x", "north": 400.0, "east": 0.0, "up": -290.0, "diff_mm": 18.0, "level": "PASS"}]
