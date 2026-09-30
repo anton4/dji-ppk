@@ -4,7 +4,7 @@ Fixtures are excerpts of real DJI / ESTPOS files. Coordinates are shifted by a f
 metres and the raw observations in sample.obs are perturbed, so they cannot be used for positioning.
 """
 import math
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -517,3 +517,265 @@ def test_status_reports_float_photos(tmp_path):
     (d / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 5, "events": {"fix": 3, "mrk": 5, "float": 2, "other": 0, "unsolved": 0}}))
     st = folder_status(d, load_flights(d), None)
     assert st.next == "done" and "3/5 fixed, 2 float (not cm-accurate)" in st.result
+
+
+# ----------------------------------------------------------------------------- D-RTK 3 base point survey
+
+STEM = "DRTK3_0041_20260912083000_8PHDN9B00AG8UN"
+HELD = "58.40039533,Lat\t26.73652104,Lon\t75.865,Ellh"
+
+
+def _log_obs(text_header: str, epochs: str) -> str:
+    """A D-RTK 3 session OBS: the Virtual RINEX fixture header (it has an APPROX POSITION) plus epoch records."""
+    return text_header + epochs
+
+
+def _basepoint_dir(tmp_path, name="site-basepoint", native=True, with_mrk=False):
+    """A base point folder like the station's storage: DRTK3_<seq>_<time>_<serial>.OBS/.NAV (native RINEX), or a
+    DAT-only session that needs convbin."""
+    d = tmp_path / name; d.mkdir()
+    epochs = "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 08 29 59.0000000  0  1\n"
+    if native:
+        (d / f"{STEM}.OBS").write_text(_log_obs((FIX / "base_header.26o").read_text(), epochs))
+        (d / f"{STEM}.NAV").write_text("     3.05           N: GNSS NAV DATA    M: Mixed            RINEX VERSION / TYPE\n"
+                                       "                                                            END OF HEADER\n")
+        (d / f"{STEM}.dat").write_bytes(b"\xd3\x00\x13" * 40)
+    else:
+        (d / f"{STEM}.dat").write_bytes(b"\xd3\x00\x13" * 40)
+    if with_mrk:
+        rows = []
+        t = 22800.0  # 06:20 GPST on Saturday 2026-09-12 (week 2383, day 6)
+        for i in range(1, 13):
+            pos = "58.40038600,Lat\t26.73655463,Lon\t71.131,Ellh" if i < 3 else "58.40039536,Lat\t26.73655903,Lon\t76.605,Ellh" if i < 6 else HELD
+            q = 16 if i < 3 else 1
+            rows.append(f"{i}\t{t + 5 * (i - 1):.6f}\t[2383]\t     0,N\t     0,E\t     0,V\t{pos}\t0.3, 0.5, 0.8\t{q},Q")
+        (d / "DRTK3_0039_20260912081500_8PHDN9B00AG8UN.MRK").write_text("\n".join(rows) + "\n")
+    return d
+
+
+def test_basepoint_discovery_and_orders(tmp_path):
+    from ppk.basepoint import basepoint_at, find_basepoints
+    from ppk.discover import find_flights
+    from ppk.rinex import find_base_candidates
+    from ppk.estpos import order_for_span, plan_basepoint_orders, format_order
+    d = _basepoint_dir(tmp_path, with_mrk=True)
+    bp = basepoint_at(d)
+    assert bp and bp.name == "site-basepoint" and len(bp.logs) == 2 and len(bp.sessions()) == 1 and len(bp.converted()) == 1
+    assert bp.sessions()[0].obs.name == f"{STEM}.OBS" and bp.nav_for(bp.sessions()[0]).name == f"{STEM}.NAV"
+    assert [m.name for m in bp.calibration_logs()] == ["DRTK3_0039_20260912081500_8PHDN9B00AG8UN.MRK"]
+    assert basepoint_at(tmp_path / "nothing") is None
+    assert [b.name for b in find_basepoints(tmp_path)] == ["site-basepoint"]
+    assert basepoint_at(d / f"{STEM}.OBS").sessions()[0].stem == STEM  # a session file works too
+    # the station's files are neither a drone flight nor a base candidate, even with an OBS/NAV/MRK triplet
+    (d / f"{STEM}.MRK").write_text((d / "DRTK3_0039_20260912081500_8PHDN9B00AG8UN.MRK").read_text())
+    assert find_flights(tmp_path) == [] and find_base_candidates(d) == []
+    assert (d / f"{STEM}.OBS").resolve() in bp.own_files()
+    orders = plan_basepoint_orders(bp, buffer_minutes=5)
+    assert len(orders) == 1
+    order, logs = orders[0]
+    assert logs == [d / f"{STEM}.OBS"]
+    assert order.start_utc == datetime(2026, 9, 12, 6, 15) and order.end_utc == datetime(2026, 9, 12, 8, 45)
+    assert order.lat == pytest.approx(58.40, abs=0.05) and order.height == pytest.approx(ecef_to_llh(2991651.1225, 1507361.2274, 5409467.2541)[2])
+    assert "broadcast" in order.height_source
+    o2 = order_for_span(datetime(2026, 9, 12, 6, 30), datetime(2026, 9, 12, 8, 29, 59), 58.4, 26.7, 100.0, "x", 5)
+    assert (o2.start_utc, o2.end_utc) == (order.start_utc, order.end_utc)
+    text = format_order(order, logs)
+    assert "base point: site-basepoint" in text and "ppk base-survey" in text
+    # a session longer than the portal limit is cut to its first hours
+    (d / f"{STEM}.OBS").write_text(_log_obs((FIX / "base_header.26o").read_text(),
+                                            "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 18 29 59.0000000  0  1\n"))
+    order, _ = plan_basepoint_orders(bp, buffer_minutes=5, max_hours=6)[0]
+    assert order.duration <= timedelta(hours=6)
+
+
+def test_calibration_log_summary(tmp_path):
+    from ppk.basepoint import basepoint_at, calibration_summary, format_calibration
+    bp = basepoint_at(_basepoint_dir(tmp_path, with_mrk=True))
+    cal = calibration_summary(bp.calibration_logs()[0])
+    assert cal["rows"] == 12 and cal["q"] == {"1": 10, "16": 2}
+    assert cal["final"]["h"] == 75.865 and cal["distinct_positions"] == 2 and cal["settle_minutes"] == round(25 / 60, 1)
+    assert cal["drift_from_first_hold_mm"]["up"] == -740 and abs(cal["drift_from_first_hold_mm"]["east"]) > 2000
+    text = "\n".join(format_calibration(cal))
+    assert "held position: 58.40039533" in text and "inherited a worse position" in text
+
+
+def test_dat_only_session_needs_conversion(tmp_path):
+    from ppk.basepoint import basepoint_at
+    from ppk.estpos import plan_basepoint_orders
+    bp = basepoint_at(_basepoint_dir(tmp_path, native=False))
+    assert len(bp.sessions()) == 1 and bp.converted() == []
+    with pytest.raises(FileNotFoundError):
+        plan_basepoint_orders(bp)
+
+
+def test_convbin_invocation(tmp_path, monkeypatch):
+    import subprocess
+    from ppk import basepoint as bpm
+    d = _basepoint_dir(tmp_path, native=False)
+    bp = bpm.basepoint_at(d)
+    slog = bp.sessions()[0]
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        Path(cmd[cmd.index("-o") + 1]).write_text("fake obs\n")
+        return subprocess.CompletedProcess(cmd, 0, stdout="1006 (12)  1075 (3600)\n")
+    monkeypatch.setattr(bpm.subprocess, "run", fake_run)
+    obs, ran = bpm.prepare_log(bp, slog)
+    assert ran and obs.name == f"{STEM}.obs" and obs.read_text() == "fake obs\n"
+    cmd = calls[0]
+    assert cmd[1:5] == ["-r", "rtcm3", "-v", "3.04"] and "-tr" in cmd and cmd[-1].endswith(".dat")
+    assert cmd[cmd.index("-hm") + 1] == "site-basepoint"
+    assert "1006 (12)" in (d / f"{STEM}_convbin.log").read_text()
+    obs2, ran2 = bpm.prepare_log(bp, slog)  # RINEX newer than the DAT: not converted again
+    assert not ran2 and len(calls) == 1 and bp.converted() == [(slog, obs)]
+    native = bpm.basepoint_at(_basepoint_dir(tmp_path, name="native"))
+    assert bpm.prepare_log(native, native.sessions()[0]) == (native.sessions()[0].obs, False)  # the station's OBS is used as is
+
+    def failing(cmd, **kw):
+        return subprocess.CompletedProcess(cmd, 1, stdout="error\n")
+    monkeypatch.setattr(bpm.subprocess, "run", failing)
+    with pytest.raises(RuntimeError):
+        bpm.prepare_log(bp, slog, force=True)
+
+
+def test_reduce_static_levels():
+    from ppk.basepoint import reduce_static
+    from ppk.pos import PosRow
+    t0 = datetime(2026, 9, 12, 6, 30)
+    lat, lon, h = 58.4, 26.7, 100.0
+
+    def rows(n_fix, n_float):
+        out = []
+        for i in range(n_fix + n_float):
+            q = 1 if i < n_fix else 2
+            j = i - n_fix / 2
+            out.append(PosRow(t0 + timedelta(seconds=i), lat + j * 1e-9, lon - j * 1e-9, h + (j % 3) * 0.001, q, 20, 0.002, 0.002, 0.005))
+        return out
+    r = reduce_static(rows(150, 5))
+    assert r["level"] == "PASS" and r["fixed"] == 150 and r["epochs"] == 155
+    assert r["lat"] == pytest.approx(lat, abs=1e-7) and r["h"] == pytest.approx(h, abs=0.002)
+    assert r["spread_mm"]["north"] < 10 and r["spread_mm"]["up"] < 2 and r["mean_sd_mm"]["up"] == 5.0
+    assert reduce_static(rows(60, 40))["level"] == "WARN"
+    assert reduce_static(rows(40, 60))["level"] == "FAIL"
+    assert reduce_static(rows(50, 0))["level"] == "WARN"  # all fixed, but too few epochs
+    assert reduce_static([])["level"] == "FAIL" and reduce_static(rows(1, 3))["level"] == "FAIL"
+
+
+def test_derive_point_arithmetic():
+    from ppk.basepoint import derive_point, dms_text
+    bc = (59.4, 24.7, 50.0)
+    surveyed = apply_ned_offset(*bc, 0.3, -0.2, -0.1)  # the true phase centre is 30 cm north, 20 cm west, 10 cm higher
+    shown = (59.4000001, 24.7000002, 48.06)
+    p = derive_point(bc, surveyed, shown, 1.8, None)
+    cm = p["correction_mm"]
+    assert cm["north"] == pytest.approx(300, abs=1) and cm["east"] == pytest.approx(-200, abs=1) and cm["up"] == pytest.approx(100, abs=0.5)
+    assert cm["horizontal"] == pytest.approx(360.6, abs=1)
+    assert p["k_m"] == pytest.approx(0.14)
+    g = p["ground"]
+    dn, de, du = ned_difference(*shown, g["lat"], g["lon"], g["h"])
+    assert (dn, de, du) == pytest.approx((0.3, -0.2, 0.1), abs=0.001) and g["pole_m"] == 1.8
+    # no shown coordinates, but the phase-centre offset is known from an earlier survey
+    p2 = derive_point(bc, surveyed, None, 1.8, 0.14)
+    assert p2["ground"]["h"] == pytest.approx(surveyed[2] - 1.94) and p2["ground"]["lat"] == surveyed[0]
+    # nothing known: only the surveyed phase centre
+    p3 = derive_point(None, surveyed, None, None, None)
+    assert "ground" not in p3 and "correction_mm" not in p3
+    assert dms_text(59.5, -24.25).startswith("59° 30' 00.0000\" N   24° 15' 00.0000\" W")
+
+
+def test_basepoint_report_and_status(tmp_path):
+    import json, os, time
+    from ppk.basepoint import basepoint_at, format_report
+    from ppk.status import basepoint_status, scan_status, format_status, status_json
+    d = _basepoint_dir(tmp_path)
+    bp = basepoint_at(d)
+    st = basepoint_status(bp, None)
+    assert st.kind == "basepoint" and st.next == "survey" and st.base == "missing" and st.sessions == 1
+    assert "06:30" in st.flown or "09:30" in st.flown  # GPST or local
+    assert st.count_text == "1 session" and "not surveyed" in st.result
+    # the station's own RINEX must never count as its base; a real covering base does
+    base = d / "vrnx.26o"
+    base.write_text((FIX / "base_header.26o").read_text() + "> 2026 09 12 06 00  0.0000000  0  1\n> 2026 09 12 09 00  0.0000000  0  1\n")
+    (d / "vrnx.26n").write_text("")
+    st = basepoint_status(bp, None)
+    assert st.base == "vrnx.26o" and st.base_ok and st.next == "survey"
+    sessions = [{"stem": STEM, "obs": f"{STEM}.OBS", "base": "vrnx.26o", "span": "x",
+                 "static": {"level": "PASS", "verdict": "3000 fixed epochs (100.0 %)", "lat": 58.4, "lon": 26.7, "h": 100.0,
+                            "spread_mm": {"north": 1.0, "east": 1.2, "up": 2.5}, "fixed": 3000},
+                 "broadcast": {"lat": 58.4, "lon": 26.7, "h": 100.3},
+                 "correction_mm": {"north": 412.0, "east": -10.0, "up": -300.0, "horizontal": 412.1}}]
+    point = {"surveyed": {"lat": 58.4, "lon": 26.7, "h": 100.0}, "correction_mm": sessions[0]["correction_mm"], "k_m": 0.141,
+             "result_stem": STEM,
+             "ground": {"lat": 58.4, "lon": 26.7, "h": 98.059, "pole_m": 1.8, "method": "shown coordinates + correction"}}
+    settings = {"name": "yard", "pole_m": 1.8, "shown": {"lat": 58.4, "lon": 26.7, "h": 98.359}}
+    cc = [{"flight": "DJI_x", "north": 400.0, "east": 0.0, "up": -290.0, "diff_mm": 18.0, "level": "PASS"}]
+    text = format_report(bp, sessions, point, settings, cc)
+    assert "Enter in DJI Pilot 2" in text and "Latitude            58.40000000" in text and "Pole height         1.800 m" in text
+    assert "41.2 cm horizontal" in text and "Cross-check, flight DJI_x" in text and "0.141 m  (plausible)" in text
+    settings["surveyed"] = {"at": "2026-09-13T10:00:00", "sessions": sessions, **point, "crosschecks": cc}
+    bp.save_settings(settings)
+    st = basepoint_status(bp, None)
+    assert st.next == "done" and "correction 41.2 cm H / -30.0 cm up" in st.result and "Manual Calibration" in st.result
+    time.sleep(0.01); os.utime(d / f"{STEM}.OBS", None)  # a newer session file: survey again
+    st = basepoint_status(bp, None)
+    assert st.next == "survey" and "outdated" in st.result
+    # scan_status lists flights and base points side by side
+    f = tmp_path / "DJI_flight"; f.mkdir()
+    import shutil
+    shutil.copy(FIX / "sample.obs", f / "DJI_a.OBS"); shutil.copy(FIX / "sample.MRK", f / "DJI_a.MRK"); (f / "DJI_a.NAV").write_text("")
+    rows = scan_status(tmp_path, None)
+    assert [(r.folder, r.kind) for r in rows] == [("DJI_flight", "flight"), ("site-basepoint", "basepoint")]
+    table = format_status(rows)
+    assert "1 session" in table and "'survey'" in table
+    assert json.loads(status_json(rows))[1]["kind"] == "basepoint"
+
+
+def test_check_base_against_log(tmp_path):
+    from ppk.basepoint import basepoint_at
+    from ppk.estpos import check_base
+    d = _basepoint_dir(tmp_path)
+    bp = basepoint_at(d)
+    base = d / "vrnx.26o"
+    base.write_text((FIX / "base_header.26o").read_text() + "> 2026 09 12 06 00  0.0000000  0  1\n> 2026 09 12 09 00  0.0000000  0  1\n")
+    _, checks = check_base(base, None, rover_obs=bp.sessions()[0].obs)
+    msgs = [c.message for c in checks]
+    assert any("log span" in m and "covered" in m and "NOT" not in m for m in msgs)
+    assert any(m.startswith("baseline to the station's broadcast position 0.0 m") for m in msgs)
+    assert all(c.level != "FAIL" for c in checks)
+
+
+def test_flight_crosschecks(tmp_path):
+    import json, shutil
+    from ppk.basepoint import flight_crosschecks
+    f = tmp_path / "DJI_flight"; f.mkdir()
+    shutil.copy(FIX / "sample.obs", f / "DJI_a.OBS"); shutil.copy(FIX / "sample.MRK", f / "DJI_a.MRK"); (f / "DJI_a.NAV").write_text("")
+    (f / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "rtk_vs_ppk": {
+        "north": {"mean_mm": 410.0}, "east": {"mean_mm": -5.0}, "up": {"mean_mm": -280.0}}}))
+    corr = {"north": 412.0, "east": -10.0, "up": -300.0}
+    cc = flight_crosschecks(tmp_path, datetime(2026, 9, 12, 6, 30), datetime(2026, 9, 12, 8, 30), corr)
+    assert len(cc) == 1 and cc[0]["flight"] == "DJI_flight" and cc[0]["level"] == "PASS" and cc[0]["diff_mm"] == pytest.approx(20.7, abs=0.1)
+    assert flight_crosschecks(tmp_path, datetime(2026, 9, 13, 6, 30), datetime(2026, 9, 13, 8, 30), corr) == []  # another day
+    cc = flight_crosschecks(tmp_path, datetime(2026, 9, 12, 6, 30), datetime(2026, 9, 12, 8, 30), {"north": 0.0, "east": 0.0, "up": 0.0})
+    assert cc[0]["level"] == "WARN"
+
+
+def test_base_survey_cli_inspect(tmp_path, monkeypatch):
+    import subprocess, json
+    from ppk import basepoint as bpm
+    from ppk.cli import main
+    d = _basepoint_dir(tmp_path, native=False, with_mrk=True)
+    hdr = (FIX / "base_header.26o").read_text()
+
+    def fake_run(cmd, **kw):
+        Path(cmd[cmd.index("-o") + 1]).write_text(_log_obs(hdr, "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 08 29 59.0000000  0  1\n"))
+        return subprocess.CompletedProcess(cmd, 0, stdout="ok\n")
+    monkeypatch.setattr(bpm.subprocess, "run", fake_run)
+    rc = main(["base-survey", str(d), "--inspect", "--pole", "1.8", "--shown", "58.4", "26.7", "98.36", "--name", "yard"])
+    assert rc == 0
+    s = json.loads((d / "basepoint.json").read_text())
+    assert s["pole_m"] == 1.8 and s["shown"]["h"] == 98.36 and s["name"] == "yard"
+    assert (d / f"{STEM}.obs").exists()
+    assert main(["base-survey", str(d)]) == 2  # no base file: the order instructions, exit 2
+    (tmp_path / "empty").mkdir()
+    assert main(["base-survey", str(tmp_path / "empty")]) == 1

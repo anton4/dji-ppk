@@ -64,6 +64,7 @@ RTKLIB compile takes a few minutes once).
 ./dji-ppk download <folder>      # download an order that already exists on the portal (never orders)
 ./dji-ppk process <folder>       # PPK only, with whatever base file is in the folder
 ./dji-ppk window <folder>        # print the order parameters for ordering by hand
+./dji-ppk survey <folder>        # survey a D-RTK 3 base point folder (see "Known base point"); START does it for such folders too
 ./dji-ppk watch                  # start the folder watcher and follow its log
 ./dji-ppk build                  # (re)build both images
 ```
@@ -112,11 +113,75 @@ Results are written next to the photos (`PPK_IN_PLACE=1`, the default). `PPK_IN_
 | `reprocess` | an input file, the base or the photo set is newer than the result |
 | `photos` | fewer photos in the folder than camera events in the MRK: the copy is not finished |
 | `expired` | flown more than 90 days ago and no base file in the folder: ESTPOS has no RINEX for it any more |
+| `survey` | a D-RTK 3 base point folder (the station's own `DRTK3_*` logs): order the Virtual RINEX, static survey (see below) |
 | `done` | nothing to do |
 
 Moving to another machine: put the flight folders under its `FLIGHTS_DIR`, set `.env`, START. Orders placed earlier
 are found on the portal by project name and span and downloaded without re-ordering; the portal keeps prepared results
 for 14 days and raw data for 90 days.
+
+## Known base point: survey the D-RTK 3 once, fly without PPK
+
+A D-RTK 3 calibrated by PPP takes 20 min to converge and still sits 30-40 cm from the truth, which is exactly the
+offset the PPK removes from every flight. For a site you return to, survey the station's position once instead:
+enter the result in DJI Pilot 2 → RTK → D-RTK 3 → Advanced Settings → Adjust Coordinates (Manual Calibration), save
+it as a Frequent Coordinate, and from then on set the station up on the same marker, pick the saved point and fly.
+The on-board RTK is then in EUREF-EST97 at centimetre level from the first minute; RINEX + PPK become optional.
+
+How it works: in base mode the D-RTK 3 keeps its own logs on its internal storage, per session
+`DRTK3_<seq>_<time>_<serial>.OBS/.NAV` (RINEX 3.05, 1 Hz, five constellations), `.dat` (the same as RTCM 3.2, what
+the drone received) and `.MRK` (its position every 5 s during the calibration). The OBS header carries the position
+the station broadcast (RTCM 1006: DJI's own antenna phase-centre coordinate for that session). A static `rnx2rtkp`
+run of that OBS against an ESTPOS Virtual RINEX generated at that position gives the true phase centre. The
+difference is the calibration error of the session; added to the coordinates Pilot 2 displayed after the
+calibration it gives the corrected ground point, with the same pole height. The same-day flight's "RTK base offset"
+(the on-board RTK vs PPK report) sees the same error from the drone and is printed as a cross-check.
+
+Once per site:
+
+1. Mark the point (nail, paint). Set the station up plumb over it, calibrate as usual (PPP or network RTK), **write
+   down the coordinates and the pole height Pilot 2 shows**, fly.
+2. Afterwards connect the D-RTK 3 to a computer over USB-C and copy that day's `DRTK3_*` files (OBS, NAV, MRK, and the
+   dat if you like) into a folder under `FLIGHTS_DIR`, e.g. `FLIGHTS_DIR/yard-basepoint/`. Any folder with the
+   station's logs and no drone flight is a base point. Take the long session recorded after the calibration
+   settled, not the two-minute one written during it: the report lists every session and the calibration log.
+3. `./dji-ppk` shows the folder with `survey` as its next step; START (or `./dji-ppk survey yard-basepoint`) asks
+   once for the pole height and the shown coordinates, orders the Virtual RINEX at the broadcast position, runs the
+   static solution and writes `basepoint.txt` with the block to type into Pilot 2:
+
+```
+ Calibration log DRTK3_0039_20260918093003_8PHDN9B00AG8UN.MRK: 2026-09-18 12:30 - 13:15 EEST, 551 rows, Q 255x16, 295x1
+   held position: 59.43712345  24.75345678  47.812 m, reached after 23 min, 257 positions held in all
+ Session DRTK3_0041_20260918095306_8PHDN9B00AG8UN: 2026-09-18 12:53 - 14:02 EEST, base yard-basepoint_VRNX.zip
+   [PASS] 5460 fixed epochs (100.0 %), spread 1.1 / 0.9 / 2.4 mm N/E/U (1 sigma)
+   broadcast (RTCM 1005, what the station used):  59.43712345  24.75345678  47.812 m
+   surveyed  (static vs ESTPOS Virtual RINEX):     59.43712711  24.75345301  47.508 m
+   correction surveyed - broadcast: +407 mm N, -213 mm E, -304 mm up  = 45.9 cm horizontal, -30.4 cm up
+ Cross-check, flight DJI_202609181240_001 (drone on-board RTK vs PPK): +401 mm N, -220 mm E, -298 mm up -> [PASS] differs by 1.1 cm
+ Phase centre above the pole tip implied by the data (h_broadcast - h_shown - pole): 0.142 m  (plausible)
+
+ Enter in DJI Pilot 2 -> RTK -> D-RTK 3 -> Advanced Settings -> Adjust Coordinates (Manual Calibration),
+ then save it as a Frequent Coordinate:
+   Latitude            59.43712711
+   Longitude           24.75345301
+   Ellipsoidal height  45.566 m
+   Pole height         1.800 m
+```
+
+Every later visit: same marker, same pole height, Manual Calibration with the saved Frequent Coordinate, fly. Process
+the first such flight once with the normal pipeline: its "RTK base offset" should now be within 2-3 cm of zero.
+Re-survey only when the marker or the pole changes; a second log of the same point is reported next to the first.
+
+Verified on real files (2026-09-27): the OBS header position equals the RTCM 1006 position in the `.dat` to 0.3 mm,
+the `.MRK` is the PPP convergence log (single for 30 s, then a held position that keeps moving for about 23 min
+before it settles; a session recorded before that inherits the unsettled position), and the DJI Assistant 2 "log
+export" is an encrypted diagnostics bundle without GNSS data. Still open until the first survey: whether Pilot 2
+displays the ground point or the antenna; the "phase centre above the pole tip" line should be a stable value of
+roughly 0.1-0.2 m, and reads "the app shows the antenna" otherwise. A `.dat` without its OBS is converted with
+`convbin` (`<session>_convbin.log`). The 90-day ESTPOS retention applies to the session's date like to a flight. The
+solution is the D-RTK 3 phase centre without an antenna model (it is not in the IGS ANTEX), which is the same
+reference DJI's own coordinate uses, so the correction is consistent. The ESTPOS portal's own computation service
+(Järeltöötlemine → Arvutamine: upload the OBS, get EUREF-EST97 coordinates) is an independent check.
 
 ## Ordering from the ESTPOS portal
 
@@ -208,8 +273,9 @@ compose.yaml         services ppk (one-shot CLI), ppk-estpos (portal), both prof
 .env.example         FLIGHTS_DIR, ESTPOS_USER / ESTPOS_PASSWORD, PPK_IN_PLACE, PPK_POLL_SECONDS, RTKLIB_REF, RTKLIB_NFREQ
 config/dji_m4e.conf  RTKLIB options (three frequencies, GPS+SBAS+Galileo+QZSS+BeiDou, fix-and-hold, combined filter)
 config/dji_m4e_l1l2.conf  two-frequency variant;  config/dji_m4e_main.conf  variant for RTKLIB-EX main
+config/drtk3_static.conf  static survey of a D-RTK 3 base point (`ppk base-survey`)
 ppk/                 python package `ppk` (stdlib only): cli, discover, mrk, rinex, events, rtklib, outputs, compare,
-                     estpos, estpos_web (Playwright), status, watch, ui, tests
+                     estpos, estpos_web (Playwright), basepoint (D-RTK 3 survey), status, watch, ui, tests
 examples/            reference comparison report for the flight above
 docs/                the table screenshot used above
 ```
@@ -226,6 +292,7 @@ docker compose --profile cli run --rm ppk process /data/flights/<folder> [--conf
 docker compose --profile cli run --rm ppk estpos-window /data/flights/<folder>
 docker compose --profile cli run --rm ppk check-base /data/flights/<folder>/<zip> --flight /data/flights/<folder>
 docker compose --profile cli run --rm ppk compare /data/flights/<folder> "/data/flights/<folder>/<name>_events.pos"
+docker compose --profile cli run --rm ppk base-survey /data/flights/<basepoint> [--pole m] [--shown lat lon h] [--inspect] [--conf f] [--set k=v]
 docker compose --profile cli run --rm ppk-estpos estpos-order /data/flights/<folder> [--dry-run] [--force] [--no-wait] [--timeout min] [--project name] [--rate s] [--max-hours h]
 docker compose --profile cli run --rm ppk-estpos estpos-download /data/flights/<folder> [--project name] [--timeout min]
 ```

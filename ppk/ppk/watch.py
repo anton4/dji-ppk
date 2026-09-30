@@ -31,10 +31,18 @@ def _span(path: Path) -> tuple | None:
 
 def resolve_base(flight: Flight, base_dir: Path | None, workdir: Path | None = None) -> Path | None:
     """Base file inside the flight folder wins; otherwise the first file in base_dir covering the flight."""
-    span = _span(flight.obs)
-    candidates = find_base_candidates(flight.directory)
+    return resolve_base_for_obs(flight.obs, flight.directory, base_dir)
+
+
+def resolve_base_for_obs(obs: Path, directory: Path, base_dir: Path | None, exclude: set[Path] | None = None) -> Path | None:
+    """The first base candidate in `directory`, then `base_dir`, whose span covers the rover `obs`; candidates with
+    navigation files first. `exclude` lists files that are never a base (a base point's own converted RINEX)."""
+    span = _span(obs)
+    candidates = find_base_candidates(directory)
     if base_dir and base_dir.is_dir():
         candidates += find_base_candidates(base_dir)
+    if exclude:
+        candidates = [c for c in candidates if c.resolve() not in exclude]
     candidates.sort(key=lambda p: not has_nav_files(p))  # a base with navigation files wins over one without
     # Unpack compressed candidates into a temporary directory, not into the output folder, so a
     # flight without a covering base does not get an empty work/ directory next to its photos.

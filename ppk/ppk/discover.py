@@ -93,6 +93,8 @@ def find_flights(root: str | Path, recursive: bool = True, max_depth: int | None
     depth = 0 if not recursive else (1 if max_depth is None else max_depth)
     flights: list[Flight] = []
     for obs in sorted(_obs_files(root, depth)):
+        if obs.name.upper().startswith("DRTK"):
+            continue  # the D-RTK 3's own logs (DRTK3_*.OBS/.NAV/.MRK, same layout): a base point, see basepoint.py
         base = obs.with_suffix("")
         nav = _sibling(base, ".nav")
         mrk = _sibling(base, ".mrk")
