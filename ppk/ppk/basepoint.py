@@ -455,8 +455,6 @@ def format_report(bp: BasePoint, sessions: list[dict], point: dict, settings: di
     if point.get("correction_mm"):
         cm = point["correction_mm"]
         lines.append(f" Correction applied: {cm['north']:+.0f} mm N, {cm['east']:+.0f} mm E, {cm['up']:+.0f} mm up, from {point.get('correction_reason', '?')}")
-        a = point["antenna"]
-        lines.append(f" Corrected antenna phase centre (EUREF-EST97):  {a['lat']:.8f}  {a['lon']:.8f}  {a['h']:.3f} m")
     lines.append("-" * w)
     shown = settings.get("shown")
     pole = settings.get("pole_m")
@@ -479,7 +477,7 @@ def format_report(bp: BasePoint, sessions: list[dict], point: dict, settings: di
                   f"   derived as: {g['method']}"]
     else:
         s = point.get("antenna") or point["surveyed"]
-        lines += ["", " Corrected antenna phase centre (EUREF-EST97, ellipsoidal height):",
+        lines += ["", " Corrected antenna phase centre (EUREF-EST97, ellipsoidal height; the position the station should broadcast):",
                   f"   {s['lat']:.8f}  {s['lon']:.8f}  {s['h']:.3f} m   ({dms_text(s['lat'], s['lon'])})",
                   " The ground point for Manual Calibration also needs the pole height and the coordinates DJI Pilot 2 showed after",
                   " a calibration on this marker (any session in this folder): ppk base-survey <folder> --shown <lat> <lon> <h> --pole <m>",
