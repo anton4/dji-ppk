@@ -15,6 +15,7 @@ from .timeutil import span_local
 from .watch import resolve_base
 
 NEXT_ORDER, NEXT_PHOTOS, NEXT_PROCESS, NEXT_REPROCESS, NEXT_DONE, NEXT_EXPIRED = "order", "photos", "process", "reprocess", "done", "expired"
+NEXT_SURVEY = "survey"  # a D-RTK 3 base point: convert the log, order the Virtual RINEX, static survey
 RETENTION_WARN_DAYS = 14
 
 
@@ -31,12 +32,19 @@ class FolderStatus:
     next: str
     rinex_days_left: int | None = None
     accuracy: str = ""  # "H 41 cm→0.4 cm  V 21 cm→0.6 cm": typical photo error as flown (on-board RTK) → after PPK (RTKLIB estimate)
+    kind: str = "flight"  # "flight" (OBS/NAV/MRK sessions) or "basepoint" (D-RTK 3 raw logs to survey)
+
+    @property
+    def count_text(self) -> str:
+        if self.kind == "basepoint":
+            return f"{self.sessions} session{'s' if self.sessions != 1 else ''}"
+        return f"{self.sessions}/{self.photos}"
 
     def row(self) -> list[str]:
         flown = self.flown
         if self.rinex_days_left is not None and 0 <= self.rinex_days_left <= RETENTION_WARN_DAYS:
             flown += f" ({self.rinex_days_left} d left)"
-        return [self.folder, f"{self.sessions}/{self.photos}", flown, self.base, self.result, self.accuracy, self.next]
+        return [self.folder, self.count_text, flown, self.base, self.result, self.accuracy, self.next]
 
 
 def _span(flights: list[Flight]) -> tuple[datetime | None, datetime | None]:
@@ -148,10 +156,66 @@ def accuracy_text(summary_path: Path) -> str:
     return f"H {h}  V {v}"
 
 
+def basepoint_status(bp, base_dir: Path | None, now: datetime | None = None) -> FolderStatus:
+    """A D-RTK 3 base point folder: logs, their span, the covering Virtual RINEX, the survey result, next step."""
+    from .basepoint import obs_span, JSON_NAME
+    from .watch import resolve_base_for_obs
+    converted = bp.converted()
+    n_sessions = len(bp.sessions())
+    first = last = None
+    for _log, obs in converted:
+        try:
+            f, l, _ = obs_span(obs)
+        except (OSError, ValueError):
+            continue
+        first = f if first is None or f < first else first
+        last = l if last is None or l > last else last
+    flown = span_local(first, last) if first and last else ("DAT not converted yet" if not converted else "?")
+    bases = {obs: resolve_base_for_obs(obs, bp.directory, base_dir, bp.own_files()) for _l, obs in converted}
+    if converted and all(bases.values()):
+        names = sorted({b.name for b in bases.values()})
+        if all(has_nav_files(b) for b in bases.values()):
+            base, base_ok = ", ".join(names), True
+        else:
+            base, base_ok = ", ".join(names) + " (no nav files)", False
+    elif any(bases.values()):
+        base, base_ok = "partial", False
+    else:
+        base, base_ok = "missing", False
+    newest_input = max(p.stat().st_mtime for l in bp.logs for p in (l.obs, l.nav, l.dat, l.mrk) if p is not None)
+    json_path = bp.directory / JSON_NAME
+    result, nxt = "not surveyed", NEXT_SURVEY
+    settings = bp.settings()
+    sv = settings.get("surveyed") or {}
+    if sv.get("at"):
+        cm = sv.get("correction_mm")
+        if cm:
+            result = f"surveyed: correction {cm['horizontal'] / 10:.1f} cm H / {cm['up'] / 10:+.1f} cm up"
+        else:
+            result = "surveyed (no broadcast position in the log)"
+        if sv.get("ground"):
+            result += ", Manual Calibration coordinates in basepoint.txt"
+        st = sv.get("sessions", [{}])[-1].get("static", {}) if sv.get("sessions") else {}
+        if st.get("level") == "WARN":
+            result += " (weak fix)"
+        nxt = NEXT_DONE
+        if (json_path.exists() and json_path.stat().st_mtime < newest_input) or len(sv.get("sessions", [])) != n_sessions:
+            result += " (outdated: new session)"
+            nxt = NEXT_SURVEY
+    days_left = rinex_days_left(first, now) if first else None
+    if not base_ok and nxt != NEXT_DONE and days_left is not None and days_left < 0:
+        nxt = NEXT_EXPIRED
+    return FolderStatus(bp.name, str(bp.directory), n_sessions, 0, flown, base, base_ok, result, nxt, days_left, "", "basepoint")
+
+
 def scan_status(root: Path, base_dir: Path | None) -> list[FolderStatus]:
+    from .basepoint import find_basepoints
     print(f"scanning {root} ...", file=sys.stderr, flush=True)
     groups = group_by_folder(find_flights(root))
-    return [folder_status(d, fls, base_dir) for d, fls in sorted(groups.items())]
+    rows = [folder_status(d, fls, base_dir) for d, fls in sorted(groups.items())]
+    flight_dirs = {d.resolve() for d in groups}
+    rows += [basepoint_status(bp, base_dir) for bp in find_basepoints(root) if bp.directory.resolve() not in flight_dirs]
+    return sorted(rows, key=lambda r: r.folder)
 
 
 def format_status(rows: list[FolderStatus]) -> str:
@@ -168,6 +232,9 @@ def format_status(rows: list[FolderStatus]) -> str:
     out.append("")
     out.append(f"ESTPOS provides RINEX for the last {RINEX_RETENTION_DAYS} days only: folders marked 'expired' cannot get a base file "
                f"any more (unless one is already in the folder); flights within {RETENTION_WARN_DAYS} days of the limit show the days left.")
+    if any(r.kind == "basepoint" for r in rows):
+        out.append("'survey' = a D-RTK 3 base point folder (the station's own DRTK3_* logs): order the Virtual RINEX, static survey; "
+                   "the corrected coordinates for Manual Calibration end up in basepoint.txt.")
     return "\n".join(out)
 
 

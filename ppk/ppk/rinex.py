@@ -205,10 +205,10 @@ def prepare_obs(path: str | Path, workdir: str | Path) -> Path:
 
 
 def find_base_candidates(directory: str | Path) -> list[Path]:
-    """RINEX-looking observation files in a directory that are not DJI rover logs."""
+    """RINEX-looking observation files in a directory that are not DJI rover logs nor the D-RTK 3's own logs."""
     out = []
     for p in sorted(Path(directory).iterdir()):
-        if not p.is_file() or p.name.startswith(".") or p.name.upper().startswith("DJI_"):
+        if not p.is_file() or p.name.startswith(".") or p.name.upper().startswith(("DJI_", "DRTK")):
             continue
         if OBS_NAME_RE.search(p.name):
             out.append(p)

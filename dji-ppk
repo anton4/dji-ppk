@@ -9,6 +9,8 @@
   ./dji-ppk order <folder>      order + download the base only         ./dji-ppk download <folder>  download an existing order (never orders)
   ./dji-ppk process <folder>    process only                           ./dji-ppk window <folder>    print the order parameters
   ./dji-ppk dry-run <folder>    fill the portal form, do not submit    ./dji-ppk watch              start the watcher, follow its log
+  ./dji-ppk survey <folder>     D-RTK 3 base point (the station's own DRTK3_* logs): order the Virtual RINEX, static survey ->
+                                the coordinates for Manual Calibration (basepoint.txt); START does it for such folders too
   ./dji-ppk build               (re)build both images
 
 <folder> is a folder name under FLIGHTS_DIR (see .env) or any path to it. Only python3 and docker compose are needed.
@@ -31,8 +33,8 @@ os.chdir(ROOT)
 COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
 _C = {"bold": "1", "dim": "2", "red": "31", "green": "32", "yellow": "33", "cyan": "36", "magenta": "35"}
 NEXT_STYLE = {"done": ("green",), "order": ("yellow", "bold"), "photos": ("yellow",), "process": ("cyan", "bold"),
-              "reprocess": ("cyan",), "expired": ("red", "bold")}
-PENDING = ("order", "process", "reprocess")
+              "reprocess": ("cyan",), "survey": ("cyan", "bold"), "expired": ("red", "bold")}
+PENDING = ("order", "process", "reprocess", "survey")
 FLIGHTS = "/data/flights"
 
 
@@ -214,7 +216,7 @@ def render_table(rows: list[dict]) -> str:
     if not rows:
         return "no flight folders (OBS/NAV/MRK triplets) found under FLIGHTS_DIR"
     head = ["folder", "sess/photos", "flown", "base", "result", "accuracy flown→PPK", "next"]
-    table = [head] + [[r["folder"], f"{r['sessions']}/{r['photos']}", r["flown"], r["base"], r["result"], r.get("accuracy") or "", r["next"]]
+    table = [head] + [[r["folder"], count_text(r), r["flown"], r["base"], r["result"], r.get("accuracy") or "", r["next"]]
                       for r in rows]
     widths = [max(len(str(x[i])) for x in table) for i in range(len(head))]
     out = []
@@ -230,12 +232,23 @@ def render_table(rows: list[dict]) -> str:
     return "\n".join(out)
 
 
+def count_text(row: dict) -> str:
+    if is_basepoint(row):
+        return f"{row['sessions']} log{'s' if row['sessions'] != 1 else ''}"
+    return f"{row['sessions']}/{row['photos']}"
+
+
+def is_basepoint(row: dict) -> bool:
+    return row.get("kind") == "basepoint"
+
+
 def legend() -> str:
     return ("next: " + c("order", *NEXT_STYLE["order"]) + " = no base file yet, " + c("photos", *NEXT_STYLE["photos"])
             + " = photos still missing in the folder (copy finished?), " + c("process", *NEXT_STYLE["process"]) + "/"
             + c("reprocess", *NEXT_STYLE["reprocess"]) + " = run it,\n      " + c("done", *NEXT_STYLE["done"])
             + " = nothing to do, " + c("expired", *NEXT_STYLE["expired"])
-            + " = older than 90 days, ESTPOS has no RINEX for it any more (only a base file already in the folder helps)")
+            + " = older than 90 days, ESTPOS has no RINEX for it any more (only a base file already in the folder helps),\n      "
+            + c("survey", *NEXT_STYLE["survey"]) + " = a D-RTK 3 base point (the station's own logs): order the RINEX, static survey")
 
 
 # ----------------------------------------------------------------------------- actions
@@ -270,7 +283,84 @@ def act_process(env, folder, *extra):
 PORTAL_DOWN = 4  # exit code of estpos-order / estpos-download when the ESTPOS backend is unavailable
 
 
+def host_folder(env: dict[str, str], folder: str) -> Path:
+    return Path(env.get("FLIGHTS_DIR") or ".").expanduser() / Path(folder.rstrip("/")).name
+
+
+def folder_is_basepoint(env: dict[str, str], folder: str) -> bool:
+    """A folder with the D-RTK 3's own logs, DRTK3_*.OBS or .dat (checked on the host: no container round trip)."""
+    try:
+        return any(p.is_file() and (p.suffix.lower() == ".dat" or (p.name.upper().startswith("DRTK") and p.suffix.lower() == ".obs"))
+                   for p in host_folder(env, folder).iterdir())
+    except OSError:
+        return False
+
+
+def survey_flags(env: dict[str, str], folder: str) -> list[str]:
+    """The pole height and the coordinates DJI Pilot 2 showed: asked once (on a terminal), remembered in basepoint.json."""
+    settings = {}
+    jp = host_folder(env, folder) / "basepoint.json"
+    try:
+        settings = json.loads(jp.read_text())
+    except (OSError, ValueError):
+        pass
+    flags: list[str] = []
+    if settings.get("pole_m") is not None and settings.get("shown"):
+        return flags
+    if not sys.stdin.isatty():
+        return flags
+    print(c(f"\n{folder}: to turn the survey into Manual Calibration coordinates the tool needs what DJI Pilot 2 showed", "bold"))
+    print(c("after the PPP calibration of this log (Enter skips; the survey then reports the antenna position only):", "dim"))
+    try:
+        if settings.get("pole_m") is None:
+            t = input("  pole height in metres (e.g. 1.8): ").strip().replace(",", ".")
+            if t:
+                flags += ["--pole", str(float(t))]
+        if not settings.get("shown"):
+            t = input("  shown coordinates 'lat lon height' (decimal degrees, ellipsoidal metres): ").strip().replace(",", ".")
+            parts = t.split()
+            if len(parts) == 3:
+                flags += ["--shown", *[str(float(x)) for x in parts]]
+            elif t:
+                print(c("  not three numbers: skipped", "yellow"))
+    except ValueError:
+        print(c("  not a number: skipped", "yellow"))
+    except (EOFError, KeyboardInterrupt):
+        print()
+    return flags
+
+
+def act_survey(env: dict[str, str], folder: str, *extra: str) -> int:
+    """A D-RTK 3 base point: inspect the logs (ppk image), order the Virtual RINEX (portal image), static survey (ppk image)."""
+    flags = [*survey_flags(env, folder), *extra]
+    print(c(f"== {folder}: the D-RTK 3 sessions", "bold"))
+    if run_in("ppk", env, "base-survey", cpath(folder), "--inspect", *flags).returncode != 0:
+        print(c(f"✘ reading the station's logs failed for {folder}", "red", "bold"), file=sys.stderr)
+        return 1
+    print(c(f"== {folder}: base file", "bold"))
+    if has_creds(env):
+        rc = run_in("ppk-estpos", env, "estpos-order", cpath(folder)).returncode
+        if rc == PORTAL_DOWN:
+            return PORTAL_DOWN
+        if rc == 3:
+            print(c(f"○ {folder}: the order is placed but not ready yet; run again later to download and survey", "yellow"))
+            return 3
+        if rc != 0:
+            print(c(f"✘ ordering the Virtual RINEX failed for {folder}", "red", "bold"), file=sys.stderr)
+            return 1
+    else:
+        print(c("ESTPOS credentials not set in .env: skipping the order step, using whatever base file is in the folder", "yellow"))
+    print(c(f"== {folder}: static survey", "bold"))
+    if run_in("ppk", env, "base-survey", cpath(folder), *flags).returncode != 0:
+        print(c(f"✘ the survey failed for {folder}", "red", "bold"), file=sys.stderr)
+        return 1
+    print(c(f"✔ {folder} surveyed: the Manual Calibration coordinates are in basepoint.txt", "green", "bold"))
+    return 0
+
+
 def act_run(env: dict[str, str], folder: str) -> int:
+    if folder_is_basepoint(env, folder):
+        return act_survey(env, folder)
     print(c(f"== {folder}: base file", "bold"))
     if has_creds(env):
         rc = run_in("ppk-estpos", env, "estpos-order", cpath(folder)).returncode
@@ -417,8 +507,8 @@ MIN_PHOTOS = 10  # folders with fewer photos are test shots or aborted copies: n
 
 
 def default_tick(row: dict) -> bool:
-    """Ticked by default: something to do, not expired, at least MIN_PHOTOS photos in the folder."""
-    return row["next"] in PENDING and row["photos"] >= MIN_PHOTOS
+    """Ticked by default: something to do, not expired, at least MIN_PHOTOS photos in the folder (base points: always)."""
+    return row["next"] in PENDING and (row["photos"] >= MIN_PHOTOS or is_basepoint(row))
 
 
 def why_not(row: dict) -> str:
@@ -428,7 +518,7 @@ def why_not(row: dict) -> str:
         return "done"
     if row["next"] == "photos":
         return "photos still missing"
-    if row["photos"] < MIN_PHOTOS:
+    if row["photos"] < MIN_PHOTOS and not is_basepoint(row):
         return f"only {row['photos']} photos"
     return ""
 
@@ -473,13 +563,14 @@ def _table_lines(rows: list[dict], ticked: list[bool], cursor: int, width: int) 
     data = []
     for r, t in zip(rows, ticked):
         status = r["result"] if r["next"] in ("done", "reprocess", "photos") else {"order": "needs RINEX + processing", "process": "needs processing",
-                                                                         "photos": "waiting for photos", "expired": "expired"}.get(r["next"], r["next"])
+                                                                         "photos": "waiting for photos", "expired": "expired",
+                                                                         "survey": "base point: needs RINEX + static survey"}.get(r["next"], r["next"])
         if r["next"] == "reprocess":
             status = "needs reprocessing (inputs changed)"
         reason = why_not(r)
         if reason and not t and reason != "done":
             status += f"  [skipped: {reason}]"
-        data.append(["[x]" if t else "[ ]", r["folder"], f"{r['sessions']}/{r['photos']}", r["flown"], r["base"], status,
+        data.append(["[x]" if t else "[ ]", r["folder"], count_text(r), r["flown"], r["base"], status,
                      r.get("accuracy") or ""])
     widths = [max(len(str(x[i])) for x in [head] + data) for i in range(len(head))]
     widths[4] = min(widths[4], 28)  # base names are short; explanations get cut, they repeat in the status column
@@ -516,7 +607,7 @@ def _draw(rows, ticked, cursor, msg: str) -> None:
     sys.stdout.write("\033[2J\033[H")
     print(c("dji-ppk", "bold", "magenta") + "  " + c("Flight folders under FLIGHTS_DIR", "bold"))
     print(c("For every ticked folder: order the Virtual RINEX from ESTPOS (or reuse an existing order), download it, run PPK, "
-            "write geo.txt.", "dim"))
+            "write geo.txt. A D-RTK 3 base point folder (DRTK3_* logs) is surveyed instead: basepoint.txt.", "dim"))
     print()
     if not rows:
         print("no flight folders (OBS/NAV/MRK triplets) found under FLIGHTS_DIR")
@@ -625,13 +716,13 @@ def main(argv: list[str]) -> int:
     s = sub.add_parser("run")
     s.add_argument("folders", nargs="*")
     s.add_argument("--all", action="store_true")
-    for name in ("order", "download", "process", "window", "dry-run"):
+    for name in ("order", "download", "process", "window", "dry-run", "survey"):
         s = sub.add_parser(name)
         s.add_argument("folder")
         s.add_argument("extra", nargs=argparse.REMAINDER)
     sub.add_parser("watch")
     sub.add_parser("build")
-    known = {"status", "run", "order", "download", "process", "window", "dry-run", "watch", "build", "-h", "--help"}
+    known = {"status", "run", "order", "download", "process", "window", "dry-run", "survey", "watch", "build", "-h", "--help"}
     if argv and argv[0] not in known and not argv[0].startswith("-"):
         argv = ["run", *argv]  # ./dji-ppk <folder> ... = run: the default is to do everything
     if "--no-update" in argv:
@@ -667,7 +758,8 @@ def main(argv: list[str]) -> int:
             banner(f)
             rc = max(rc, act_run(env, f))
         return rc
-    fn = {"order": act_order, "download": act_download, "process": act_process, "window": act_window, "dry-run": act_dryrun}[a.cmd]
+    fn = {"order": act_order, "download": act_download, "process": act_process, "window": act_window, "dry-run": act_dryrun,
+          "survey": act_survey}[a.cmd]
     return fn(env, a.folder, *a.extra)
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 import os
 import re
 import shutil
@@ -14,9 +15,10 @@ from pathlib import Path
 from . import __version__
 from .compare import compare_events, format_report, find_reference_events
 from .discover import Flight, load_flight, load_flights
-from .estpos import check_base, format_order, plan_order, plan_orders, rinex_days_left, RINEX_RETENTION_DAYS
+from .estpos import check_base, format_order, plan_order, plan_orders, plan_basepoint_orders, rinex_days_left, RINEX_RETENTION_DAYS
 from .events import write_obs_with_events
 from .mrk import parse_mrk
+from .offsets import ned_difference
 from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_summary, solution_quality, format_quality, rtk_vs_ppk, format_rtk_vs_ppk, format_in_short
 from .pos import read_pos
 from .rinex import prepare_obs, read_header, scan_obs_span, find_base_candidates, find_nav_files, stale_nav_systems, has_nav_files
@@ -27,6 +29,7 @@ from . import ui
 log = logging.getLogger("ppk")
 
 DEFAULT_CONF = os.environ.get("PPK_CONF", "/app/config/dji_m4e.conf")
+STATIC_CONF = os.environ.get("PPK_STATIC_CONF", str(Path(DEFAULT_CONF).parent / "drtk3_static.conf"))
 DEFAULT_OUT = os.environ.get("PPK_OUT_DIR", "/data/out")
 DEFAULT_BASE_DIR = os.environ.get("PPK_BASE_DIR", "/data/base")
 DEFAULT_IN_PLACE = os.environ.get("PPK_IN_PLACE", "").lower() in ("1", "true", "on", "yes")
@@ -291,7 +294,17 @@ def _print_orders(orders) -> None:
         print(format_order(order, fls))
 
 
+def _basepoint_arg(arg: str):
+    """The base point in a folder argument, or None for a flight folder."""
+    from .basepoint import basepoint_at
+    return basepoint_at(_flight_path(arg))
+
+
 def cmd_estpos_window(a: argparse.Namespace) -> int:
+    bp = _basepoint_arg(a.flight)
+    if bp:
+        _print_orders(plan_basepoint_orders(bp, a.buffer, a.max_hours))
+        return 0
     flights = load_flights(_flight_path(a.flight))
     _print_orders(plan_orders(flights, a.buffer, a.height, a.max_hours))
     return 0
@@ -321,20 +334,34 @@ def cmd_estpos_order(a: argparse.Namespace) -> int:
     except ImportError as exc:
         raise SystemExit(f"playwright is not installed ({exc}); use the ppk-estpos compose service: "
                          "docker compose --profile cli run --rm ppk-estpos estpos-order <flight>")
-    flights = load_flights(_flight_path(a.flight))
-    flight = flights[0]
-    if not a.force:
-        have = resolve_bases(flights, None, DEFAULT_BASE_DIR)
-        if all(have) and all(has_nav_files(b) for b in have):
-            names = sorted({b.name for b in have})
-            print(f"{flight.name}: base file{'s' if len(names) > 1 else ''} {', '.join(names)} already cover"
-                  f"{'s' if len(names) == 1 else ''} all {len(flights)} session{'s' if len(flights) > 1 else ''}; nothing to order.")
-            print(f"Run: ppk process {flight.directory}   (use --force to order anyway)")
+    bp = _basepoint_arg(a.flight)
+    if bp:
+        have = basepoint_bases(bp, DEFAULT_BASE_DIR)
+        if not a.force and have and all(have.values()) and all(has_nav_files(b) for b in have.values()):
+            names = sorted({b.name for b in have.values()})
+            print(f"{bp.name}: base file{'s' if len(names) > 1 else ''} {', '.join(names)} already cover"
+                  f"{'s' if len(names) == 1 else ''} every log; nothing to order.")
+            print(f"Run: ppk base-survey {bp.directory}   (use --force to order anyway)")
             return 0
-        if all(have):
-            log.warning("%s covers the flight but has no navigation files (GPS unusable with the DJI NAV): ordering the ESTPOS zip",
-                        ", ".join(sorted({b.name for b in have})))
-    orders = plan_orders(flights, a.buffer, a.height, a.max_hours)
+        name, dest = bp.name, bp.directory
+        orders = plan_basepoint_orders(bp, a.buffer, a.max_hours)
+        rovers = [obs for _o, fls in orders for obs in fls]
+    else:
+        flights = load_flights(_flight_path(a.flight))
+        flight = flights[0]
+        name, dest, rovers = flight.name, flight.directory, flights
+        if not a.force:
+            have = resolve_bases(flights, None, DEFAULT_BASE_DIR)
+            if all(have) and all(has_nav_files(b) for b in have):
+                names = sorted({b.name for b in have})
+                print(f"{flight.name}: base file{'s' if len(names) > 1 else ''} {', '.join(names)} already cover"
+                      f"{'s' if len(names) == 1 else ''} all {len(flights)} session{'s' if len(flights) > 1 else ''}; nothing to order.")
+                print(f"Run: ppk process {flight.directory}   (use --force to order anyway)")
+                return 0
+            if all(have):
+                log.warning("%s covers the flight but has no navigation files (GPS unusable with the DJI NAV): ordering the ESTPOS zip",
+                            ", ".join(sorted({b.name for b in have})))
+        orders = plan_orders(flights, a.buffer, a.height, a.max_hours)
     _print_orders(orders)
     left = min(rinex_days_left(o.flight_first_gpst) for o, _f in orders)
     if left < 0:
@@ -343,15 +370,14 @@ def cmd_estpos_order(a: argparse.Namespace) -> int:
         return 2
     if left <= 7:
         log.warning("only %d day(s) left before ESTPOS drops the RINEX data for this flight", left)
-    projects = _project_names(flight.name, len(orders), a.project)
+    projects = _project_names(name, len(orders), a.project)
     for order, _fls in orders:
         if order.duration > timedelta(hours=a.max_hours):
             log.warning("order of %.2f h exceeds the %.1f h limit (one session is that long); the portal may refuse it",
                         order.duration.total_seconds() / 3600, a.max_hours)
     user, pw = _estpos_credentials()
-    dest = flight.directory
     shot = dest / "estpos_order_form.png" if (a.dry_run or a.screenshot) else None
-    height = orders[0][0].height if a.send_height else None
+    height = orders[0][0].height if (a.send_height or bp) else None  # a base point's height is the real antenna height
     try:
         paths = estpos_web.order_and_download_many([(o, p) for (o, _f), p in zip(orders, projects)], dest, user, pw,
                                                    rate_s=a.rate, height=height, wait=not a.no_wait, timeout_min=a.timeout,
@@ -367,7 +393,7 @@ def cmd_estpos_order(a: argparse.Namespace) -> int:
         return 1
     rc = 0
     for path in paths:
-        rc = max(rc, _report_downloaded_base(path, flight, flights))
+        rc = max(rc, _report_downloaded_base(path, dest, rovers))
     return rc
 
 
@@ -377,22 +403,32 @@ def cmd_estpos_download(a: argparse.Namespace) -> int:
         from . import estpos_web
     except ImportError as exc:
         raise SystemExit(f"playwright is not installed ({exc}); use the ppk-estpos compose service")
-    flights = load_flights(_flight_path(a.flight))
-    flight = flights[0]
-    user, pw = _estpos_credentials()
-    if not a.force:
-        have = resolve_bases(flights, None, DEFAULT_BASE_DIR)
-        if all(have) and all(has_nav_files(b) for b in have):
-            print(f"{flight.name}: base file {', '.join(sorted({b.name for b in have}))} already covers every session; nothing to download.")
+    bp = _basepoint_arg(a.flight)
+    if bp:
+        name, dest = bp.name, bp.directory
+        have = basepoint_bases(bp, DEFAULT_BASE_DIR)
+        if not a.force and have and all(have.values()) and all(has_nav_files(b) for b in have.values()):
+            print(f"{bp.name}: base file {', '.join(sorted({b.name for b in have.values()}))} already covers every log; nothing to download.")
             return 0
+        orders = plan_basepoint_orders(bp, a.buffer, a.max_hours)
+        rovers = [obs for _o, fls in orders for obs in fls]
+    else:
+        flights = load_flights(_flight_path(a.flight))
+        flight = flights[0]
+        name, dest, rovers = flight.name, flight.directory, flights
+        if not a.force:
+            have = resolve_bases(flights, None, DEFAULT_BASE_DIR)
+            if all(have) and all(has_nav_files(b) for b in have):
+                print(f"{flight.name}: base file {', '.join(sorted({b.name for b in have}))} already covers every session; nothing to download.")
+                return 0
+        orders = plan_orders(flights, a.buffer, None, a.max_hours)  # same planning as estpos-order: names and spans match
+    user, pw = _estpos_credentials()
     try:
         if a.project:
-            paths = [estpos_web.download_existing(a.project, flight.directory, user, pw, timeout_min=a.timeout, headed=a.headed)]
+            paths = [estpos_web.download_existing(a.project, dest, user, pw, timeout_min=a.timeout, headed=a.headed)]
         else:
-            # same planning as estpos-order, so the project names and spans match what was ordered before
-            orders = plan_orders(flights, a.buffer, None, a.max_hours)
-            projects = _project_names(flight.name, len(orders), None)
-            paths = estpos_web.download_for_orders([(o, p) for (o, _f), p in zip(orders, projects)], flight.directory, user, pw,
+            projects = _project_names(name, len(orders), None)
+            paths = estpos_web.download_for_orders([(o, p) for (o, _f), p in zip(orders, projects)], dest, user, pw,
                                                    timeout_min=a.timeout, headed=a.headed)
     except estpos_web.NotOrdered as exc:
         log.warning("%s", exc)
@@ -405,21 +441,23 @@ def cmd_estpos_download(a: argparse.Namespace) -> int:
         return 1
     rc = 0
     for path in paths:
-        rc = max(rc, _report_downloaded_base(path, flight, flights))
+        rc = max(rc, _report_downloaded_base(path, dest, rovers))
     return rc
 
 
-def _report_downloaded_base(path: Path, flight: Flight, flights: list[Flight] | None = None) -> int:
-    """Validate a downloaded base against every session of the folder and print the checks."""
+def _report_downloaded_base(path: Path, directory: Path, rovers: list) -> int:
+    """Validate a downloaded base against every session (Flight) or log (obs Path) of the folder and print the checks."""
     import tempfile
-    sessions = flights or [flight]
     checks = []
     with tempfile.TemporaryDirectory(prefix="ppk-basecheck-") as tmp:
         plain = prepare_obs(path, tmp)
-        for i, fl in enumerate(sessions):
-            _, cs = check_base(plain, fl, Path(os.environ.get("PPK_ANTEX", "")) or None)
+        for i, rover in enumerate(rovers):
+            if isinstance(rover, Flight):
+                _, cs = check_base(plain, rover, Path(os.environ.get("PPK_ANTEX", "")) or None)
+            else:
+                _, cs = check_base(plain, None, Path(os.environ.get("PPK_ANTEX", "")) or None, rover_obs=rover)
             # base-only checks are identical for every session: keep them once, flight checks per session
-            checks += [c for c in cs if i == 0 or "flight" in c.message or "baseline" in c.message]
+            checks += [c for c in cs if i == 0 or "flight" in c.message or "log span" in c.message or "baseline" in c.message]
     print(f"\nBase file: {path}")
     for c in checks:
         if "ANTEX" in c.message and not os.environ.get("PPK_ANTEX"):
@@ -427,8 +465,171 @@ def _report_downloaded_base(path: Path, flight: Flight, flights: list[Flight] | 
         print(ui.colorize_report(f"  [{c.level:>4}] {c.message}"))
     worst = "FAIL" if any(c.level == "FAIL" for c in checks) else "PASS"
     print(ui.colorize_report(f"Overall: {worst}"))
-    print(f"\nNext: ppk process {flight.directory}   (or wait for the watcher)")
+    if rovers and not isinstance(rovers[0], Flight):
+        print(f"\nNext: ppk base-survey {directory}")
+    else:
+        print(f"\nNext: ppk process {directory}   (or wait for the watcher)")
     return 1 if worst == "FAIL" else 0
+
+
+# ----------------------------------------------------------------------------- base point survey
+
+def basepoint_bases(bp, base_dir: str | None) -> dict[Path, Path | None]:
+    """Covering base file per converted log (obs), from the folder or base_dir; the folder's own RINEX never counts."""
+    from .watch import resolve_base_for_obs
+    return {obs: resolve_base_for_obs(obs, bp.directory, Path(base_dir) if base_dir else None, bp.own_files())
+            for _log, obs in bp.converted()}
+
+
+def _no_base_help_basepoint(bp, base_dir: str | None) -> str:
+    lines = ["", "=" * 72, f" No base RINEX covers the D-RTK 3 session(s) of base point {bp.name}", "=" * 72,
+             f" Looked in:         {bp.directory}"]
+    if base_dir:
+        lines.append(f"                    {base_dir}")
+    lines += ["", " What to do:",
+              "   1. Order a Virtual RINEX for the parameters below (the launcher's `survey` action does it, or",
+              f"      ppk estpos-order {bp.directory} in the portal image, or by hand on the ESTPOS portal).",
+              f"   2. Copy the downloaded zip into {bp.directory}", "   3. Run this command again.", ""]
+    try:
+        for order, obs in plan_basepoint_orders(bp):
+            lines.append(format_order(order, obs))
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f" (could not compute the order parameters: {exc})")
+    return "\n".join(lines)
+
+
+def cmd_base_survey(a: argparse.Namespace) -> int:
+    """Survey a D-RTK 3 base point: DAT -> RINEX, static solution against the ESTPOS Virtual RINEX, the corrected
+    coordinates for Manual Calibration."""
+    from . import basepoint as bpm
+    bp = bpm.basepoint_at(_flight_path(a.folder))
+    if bp is None:
+        raise FileNotFoundError(f"{a.folder}: no D-RTK 3 session files (DRTK3_*.OBS/.NAV/.dat) in this folder; copy them from the "
+                                "station's internal storage over USB-C")
+    settings = bp.settings()
+    if a.name:
+        settings["name"] = a.name
+    if a.pole is not None:
+        settings["pole_m"] = a.pole
+    if a.shown:
+        settings["shown"] = {"lat": a.shown[0], "lon": a.shown[1], "h": a.shown[2]}
+    if a.k is not None:
+        settings["k_m"] = a.k
+    bp.save_settings(settings)
+
+    sessions_in = bp.sessions()
+    log.info(ui.step(1, 4, "%s: %d D-RTK 3 session%s, %d calibration log%s"), bp.name, len(sessions_in), "" if len(sessions_in) == 1 else "s",
+             len(bp.calibration_logs()), "" if len(bp.calibration_logs()) == 1 else "s")
+    calibrations = []
+    for mrk in bp.calibration_logs():
+        try:
+            cal = bpm.calibration_summary(mrk)
+        except (OSError, ValueError) as exc:
+            log.warning("%s: cannot read the calibration log: %s", mrk.name, exc)
+            continue
+        calibrations.append(cal)
+        for line in bpm.format_calibration(cal):
+            log.info("%s", line.strip())
+    for slog in sessions_in:
+        obs, ran = bpm.prepare_log(bp, slog, force=a.reconvert)
+        hdr, llh = bpm.broadcast_position(obs)
+        first, last, n = bpm.obs_span(obs)
+        log.info("%s%s: %s, %d epochs, %s", obs.name, " (converted from the DAT)" if ran else "", span_local(first, last), n,
+                 f"broadcast position lat {llh[0]:.8f} lon {llh[1]:.8f} h {llh[2]:.3f} m" if llh else "NO base position in the header (RTCM 1006 missing)")
+        if hdr.ant_type:
+            log.info("%s: antenna '%s', delta H/E/N %s", obs.name, hdr.ant_type, hdr.ant_delta_hen)
+        if n < bpm.MIN_FIXED_EPOCHS:
+            log.warning("%s: only %d epochs (%s): too short for a reliable survey, use a longer session", obs.name, n, span_local(first, last))
+        if bpm.rinex_days_left_for(first) < 0:
+            log.warning("%s was logged more than %d days ago: ESTPOS has no RINEX for it any more", obs.name, RINEX_RETENTION_DAYS)
+    if a.inspect:
+        print(f"\nNext: order the Virtual RINEX (ppk estpos-order {bp.directory}) and run ppk base-survey {bp.directory}")
+        return 0
+
+    log.info(ui.step(2, 4, "looking for a covering base file"))
+    bases = basepoint_bases(bp, a.base_dir) if not a.base else {obs: Path(a.base) for _d, obs in bp.converted()}
+    missing = [obs for obs, b in bases.items() if b is None]
+    if missing:
+        log.error("no base file covering %s in %s or %s", ", ".join(o.name for o in missing), bp.directory, a.base_dir)
+        print(_no_base_help_basepoint(bp, a.base_dir))
+        return 2
+
+    log.info(ui.step(3, 4, "static solution with %s"), rtklib_version())
+    work = bp.directory / "work"
+    work.mkdir(exist_ok=True)
+    overrides = _parse_overrides(a.set)
+    sessions = []
+    try:
+        for obs, base in bases.items():
+            base_plain = prepare_obs(base, work)
+            base_navs = find_nav_files(base, work)
+            _hdr, checks = check_base(base_plain, None, Path(os.environ.get("PPK_ANTEX", "")) or None, rover_obs=obs)
+            for c in checks:
+                (log.error if c.level == "FAIL" else log.warning if c.level == "WARN" else log.info)("base: %s", c.message)
+            if any(c.level == "FAIL" for c in checks):
+                raise RuntimeError("base file failed validation, see log")
+            if not base_navs:
+                log.warning("%s has no navigation files; using the station's own broadcast ephemerides only", base.name)
+            stem = obs.stem
+            conf_used = write_conf(Path(a.conf), bp.directory / f"{stem}_rtklib_used.conf", overrides)
+            slog = next(l for l, o in bp.converted() if o == obs)
+            own_nav = bp.nav_for(slog)  # the station's own broadcast ephemerides
+            navs = ([own_nav] if own_nav else []) + base_navs
+            res = run_rnx2rtkp(conf_used, bp.directory / f"{stem}_static.pos", obs, base_plain, navs, bp.directory / f"{stem}_rtklib.log")
+            log.info("rnx2rtkp finished in %.1f s (exit %d)", res.seconds, res.returncode)
+            if not res.pos_path.exists():
+                raise RuntimeError(f"rnx2rtkp produced no solution, see {res.log_path}")
+            static = bpm.reduce_static(read_pos(res.pos_path).rows)
+            first, last, _n = bpm.obs_span(obs)
+            _h, llh = bpm.broadcast_position(obs)
+            sess = {"stem": stem, "obs": obs.name, "base": Path(base).name, "span": span_local(first, last),
+                    "first_gpst": first, "last_gpst": last, "static": static}
+            if llh:
+                sess["broadcast"] = {"lat": llh[0], "lon": llh[1], "h": llh[2]}
+            if "lat" in static:
+                if llh:
+                    dn, de, du = ned_difference(*llh, static["lat"], static["lon"], static["h"])
+                    sess["correction_mm"] = {"north": round(1000 * dn, 1), "east": round(1000 * de, 1), "up": round(1000 * du, 1),
+                                             "horizontal": round(1000 * math.hypot(dn, de), 1)}
+                (log.info if static["level"] == "PASS" else log.warning if static["level"] == "WARN" else log.error)(
+                    "%s: %s", stem, static["verdict"])
+            else:
+                log.error("%s: %s", stem, static["verdict"])
+            sessions.append(sess)
+    finally:
+        if not a.keep_work:
+            shutil.rmtree(work, ignore_errors=True)
+
+    log.info(ui.step(4, 4, "the point"))
+    usable = [x for x in sessions if "lat" in x["static"] and x["static"]["level"] != "FAIL"]
+    if not usable:
+        raise RuntimeError("no usable static solution; see the verdicts above and the rtklib logs")
+    best = max(usable, key=lambda x: x["static"]["fixed"])
+    st = best["static"]
+    surveyed = (st["lat"], st["lon"], st["h"])
+    bc = best.get("broadcast")
+    shown = settings.get("shown")
+    point = bpm.derive_point((bc["lat"], bc["lon"], bc["h"]) if bc else None, surveyed,
+                             (shown["lat"], shown["lon"], shown["h"]) if shown else None, settings.get("pole_m"), settings.get("k_m"))
+    point["result_stem"] = best["stem"]
+    if len(usable) > 1:
+        others = [x for x in usable if x is not best]
+        point["disagreement_mm"] = round(max(1000 * math.dist(  # 3D, via local NEU
+            (0.0, 0.0, 0.0), ned_difference(*surveyed, x["static"]["lat"], x["static"]["lon"], x["static"]["h"])) for x in others), 1)
+    root = Path(a.flights_dir) if a.flights_dir else bp.directory.parent
+    crosschecks = bpm.flight_crosschecks(root, min(x["first_gpst"] for x in sessions), max(x["last_gpst"] for x in sessions),
+                                         point.get("correction_mm"), exclude=bp.directory)
+    if point.get("k_m") is not None and 0.0 < point["k_m"] < 0.5:
+        settings["k_m"] = point["k_m"]  # remembered: later surveys can derive the ground point without the shown coordinates
+    settings["surveyed"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "rtklib": rtklib_version(), "conf": str(a.conf),
+                            "overrides": overrides, "sessions": sessions, "calibrations": calibrations, **point, "crosschecks": crosschecks}
+    bp.save_settings(settings)
+    report = bpm.format_report(bp, sessions, point, settings, crosschecks, calibrations)
+    (bp.directory / bpm.REPORT_NAME).write_text(report + "\n")
+    print()
+    print(ui.colorize_report(report))
+    print(ui.c(f"  in {bp.directory}: {bpm.REPORT_NAME}, {bpm.JSON_NAME}, <session>_static.pos, <session>_rtklib.log", "dim"))
+    return 0
 
 
 def cmd_check_base(a: argparse.Namespace) -> int:
@@ -531,15 +732,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-v", "--verbose", action="store_true")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("estpos-window", help="print the ESTPOS Virtual RINEX order parameters for a flight")
-    s.add_argument("flight", help="flight folder (or .OBS file)")
+    s = sub.add_parser("estpos-window", help="print the ESTPOS Virtual RINEX order parameters for a flight or a base point")
+    s.add_argument("flight", help="flight folder (or .OBS file), or a D-RTK 3 base point folder")
     s.add_argument("--buffer", type=int, default=5, help="minutes of margin before/after the flight (default 5)")
     s.add_argument("--height", type=float, help="override the virtual point ellipsoidal height (m)")
     s.add_argument("--max-hours", type=float, default=6.0, help="max length of one Virtual RINEX order; a longer flight day is split into several orders at the gaps between sessions (each order only spans its sessions plus the buffer)")
     s.set_defaults(func=cmd_estpos_window)
 
-    s = sub.add_parser("estpos-order", help="order the Virtual RINEX for a flight on the ESTPOS portal and download it (Playwright)")
-    s.add_argument("flight", help="flight folder (or .OBS file)")
+    s = sub.add_parser("estpos-order", help="order the Virtual RINEX for a flight or a base point on the ESTPOS portal and download it (Playwright)")
+    s.add_argument("flight", help="flight folder (or .OBS file), or a D-RTK 3 base point folder")
     s.add_argument("--project", help="project name shown on the portal (default: flight folder name)")
     s.add_argument("--buffer", type=int, default=5, help="minutes of margin before/after the flight (default 5)")
     s.add_argument("--height", type=float, help="override the virtual point ellipsoidal height (m)")
@@ -565,6 +766,25 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--force", action="store_true", help="download even if a base file in the folder already covers every session")
     s.add_argument("--headed", action="store_true")
     s.set_defaults(func=cmd_estpos_download)
+
+    s = sub.add_parser("base-survey", help="survey a D-RTK 3 base point from the station's own logs (DRTK3_*.OBS/.NAV, or .dat) "
+                       "against the ESTPOS Virtual RINEX: the corrected coordinates for Manual Calibration")
+    s.add_argument("folder", help="base point folder holding the session files copied from the D-RTK 3's internal storage")
+    s.add_argument("--pole", type=float, help="pole height in metres used when the station was calibrated")
+    s.add_argument("--shown", type=float, nargs=3, metavar=("LAT", "LON", "H"),
+                   help="coordinates DJI Pilot 2 displayed after that calibration: decimal degrees and ellipsoidal height")
+    s.add_argument("--name", help="a name for the point (site), kept in basepoint.json")
+    s.add_argument("--k", type=float, help="phase-centre height above the pole tip (m), if known; normally derived and remembered")
+    s.add_argument("--inspect", action="store_true", help="only list the sessions (span, epochs, broadcast position) and the calibration "
+                   "logs; converts DAT-only sessions to RINEX")
+    s.add_argument("--reconvert", action="store_true", help="convert a DAT-only session again even if its RINEX is newer")
+    s.add_argument("--base", help="base RINEX file; default: auto-detect in the folder and --base-dir")
+    s.add_argument("--base-dir", default=DEFAULT_BASE_DIR)
+    s.add_argument("--flights-dir", help="where to look for same-day flights for the cross-check (default: the parent folder)")
+    s.add_argument("--conf", default=STATIC_CONF, help="RTKLIB configuration (default: the static survey config)")
+    s.add_argument("--set", action="append", metavar="KEY=VALUE", help="override an RTKLIB option (repeatable)")
+    s.add_argument("--keep-work", action="store_true")
+    s.set_defaults(func=cmd_base_survey)
 
     s = sub.add_parser("check-base", help="validate a downloaded base RINEX file, optionally against a flight")
     s.add_argument("base")

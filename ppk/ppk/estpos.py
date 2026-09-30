@@ -121,10 +121,54 @@ def plan_order(flights, buffer_minutes: int = 5, height_override: float | None =
         if height is None:
             height = min(e.ellh for e in mrk) - 50.0
             src = "min photo ellipsoidal height - 50 m (no XMP altitude found)"
+    return order_for_span(first, last, lat, lon, height, src, buffer_minutes)
+
+
+def order_for_span(first_gpst: datetime, last_gpst: datetime, lat: float, lon: float, height: float, height_source: str,
+                   buffer_minutes: int = 5) -> EstposOrder:
+    """A Virtual RINEX order at (lat, lon, height) covering the GPST span plus the buffer, on quarter hours (UTC)."""
     buf = timedelta(minutes=buffer_minutes)
-    start = floor_quarter(gpst_to_utc(first) - buf)
-    end = ceil_quarter(gpst_to_utc(last) + buf)
-    return EstposOrder(lat, lon, height, src, first, last, start, end)
+    start = floor_quarter(gpst_to_utc(first_gpst) - buf)
+    end = ceil_quarter(gpst_to_utc(last_gpst) + buf)
+    return EstposOrder(lat, lon, height, height_source, first_gpst, last_gpst, start, end)
+
+
+def plan_basepoint_orders(bp, buffer_minutes: int = 5, max_hours: float = 6.0) -> list[tuple[EstposOrder, list[Path]]]:
+    """Orders for a D-RTK 3 base point: one per converted log (obs), at the position the station broadcast
+    (RTCM 1005 -> RINEX header). Logs whose spans fit into `max_hours` together share one order. A single log
+    longer than the limit is cut to its first `max_hours`: the static survey needs no more than that."""
+    from .basepoint import obs_span, broadcast_position
+    items = []
+    for dat, obs in bp.converted():
+        hdr, llh = broadcast_position(obs)
+        if llh is None:
+            raise ValueError(f"{obs.name}: no APPROX POSITION in the header (the log carries no RTCM 1005/1006); "
+                             "order the Virtual RINEX by hand at the station's position, or rely on the drone-based offset")
+        first, last, _ = obs_span(obs)
+        limit = timedelta(hours=max_hours) - 2 * timedelta(minutes=buffer_minutes) - 2 * QUARTER
+        if last - first > limit:
+            last = first + limit
+        items.append((obs, first, last, llh))
+    if not items:
+        raise FileNotFoundError(f"{bp.directory}: no session RINEX yet; run `ppk base-survey <folder> --inspect` first (it converts a DAT-only session)")
+    items.sort(key=lambda it: it[1])
+    clusters: list[list[int]] = []
+    for i, (_obs, f, l, _llh) in enumerate(items):
+        if clusters:
+            start = floor_quarter(gpst_to_utc(items[clusters[-1][0]][1]) - timedelta(minutes=buffer_minutes))
+            end = ceil_quarter(gpst_to_utc(l) + timedelta(minutes=buffer_minutes))
+            if end - start <= timedelta(hours=max_hours):
+                clusters[-1].append(i)
+                continue
+        clusters.append([i])
+    orders = []
+    for idx in clusters:
+        first = items[idx[0]][1]
+        last = max(items[i][2] for i in idx)
+        lat, lon, h = items[idx[0]][3]
+        orders.append((order_for_span(first, last, lat, lon, h, "D-RTK 3 broadcast position (RTCM 1006), antenna phase centre",
+                                      buffer_minutes), [items[i][0] for i in idx]))
+    return orders
 
 
 def plan_orders(flights, buffer_minutes: int = 5, height_override: float | None = None,
@@ -157,10 +201,15 @@ def format_order(order: EstposOrder, flights) -> str:
     flight = flights[0]
     dur_min = int(order.duration.total_seconds() // 60)
     tz = order.start_local.tzname()
-    sessions = "" if len(flights) == 1 else f"  ({len(flights)} sessions: " + ", ".join(f.stem for f in flights) + ")"
+    if isinstance(flight, Path):  # a base point: the converted logs instead of flight sessions
+        directory, what = flight.parent, "base point"
+        sessions = "  (" + ", ".join(f.stem for f in flights) + ")"
+    else:
+        directory, what = flight.directory, "flight"
+        sessions = "" if len(flights) == 1 else f"  ({len(flights)} sessions: " + ", ".join(f.stem for f in flights) + ")"
     lines = [
         "=" * 72,
-        " ESTPOS Virtual RINEX order for flight: " + flight.name + sessions,
+        f" ESTPOS Virtual RINEX order for {what}: " + directory.name + sessions,
         "=" * 72,
         f" Portal:            {PORTAL_URL}  (Post Processing -> RINEX Data -> [x] Virtual RINEX)",
         f" Latitude (deg):    {order.lat:.7f}",
@@ -175,11 +224,11 @@ def format_order(order: EstposOrder, flights) -> str:
         f" Same in UTC:       {order.start_utc:%Y-%m-%d %H:%M} - {order.end_utc:%H:%M} UTC",
         f" Flight:            {span_local(order.flight_first_gpst, order.flight_last_gpst, seconds=True)}"
         f"  ({order.flight_first_gpst:%H:%M:%S} - {order.flight_last_gpst:%H:%M:%S} GPST)",
-        f" Photos:            {sum(len(f.images) for f in flights)}",
+        f" Photos:            {sum(len(f.images) for f in flights)}" if what == "flight" else " Logged:            D-RTK 3 raw log, static survey of the base point",
         "=" * 72,
-        f" After download, copy the .??o/.rnx (or the zip) into {flight.directory} and run:",
-        f"   ppk process {flight.directory}",
-        " (or keep it in /data/base; it is picked up automatically when it covers the flight)",
+        f" After download, copy the .??o/.rnx (or the zip) into {directory} and run:",
+        f"   ppk {'process' if what == 'flight' else 'base-survey'} {directory}",
+        " (or keep it in /data/base; it is picked up automatically when it covers the " + ("flight)" if what == "flight" else "log)"),
     ]
     return "\n".join(lines)
 
@@ -191,7 +240,10 @@ class Check:
     message: str
 
 
-def check_base(base_obs: Path, flight: Flight | None, antex: Path | None = None) -> tuple[RinexHeader, list[Check]]:
+def check_base(base_obs: Path, flight: Flight | None, antex: Path | None = None,
+               rover_obs: Path | None = None) -> tuple[RinexHeader, list[Check]]:
+    """Validate a base file, optionally against a flight (coverage of its span, baseline to the photos) or, for a
+    base point survey, against a plain rover observation file (coverage, baseline to its header position)."""
     checks: list[Check] = []
     hdr = read_header(base_obs)
     first, last, n = scan_obs_span(base_obs, hdr)
@@ -214,25 +266,35 @@ def check_base(base_obs: Path, flight: Flight | None, antex: Path | None = None)
         checks.append(Check(False, "FAIL", "APPROX POSITION XYZ missing or zero: set ant2-postype/pos manually"))
     if first and last:
         checks.append(Check(True, "INFO", f"base span {span_local(first, last)} ({first:%H:%M:%S} - {last:%H:%M:%S} GPST), {n} epochs"))
-    if flight is not None and first and last:
-        fh = read_header(flight.obs)
-        f_first, f_last, _ = scan_obs_span(flight.obs, fh)
+    rover = flight.obs if flight is not None else rover_obs
+    if rover is not None and first and last:
+        fh = read_header(rover)
+        f_first, f_last, _ = scan_obs_span(rover, fh)
         f_first = f_first or fh.first_obs
         f_last = f_last or fh.last_obs
+        what = "flight" if flight is not None else "log"
         if f_first and f_last:
             covers = first <= f_first and last >= f_last
             checks.append(Check(covers, "PASS" if covers else "FAIL",
-                                f"flight span {span_local(f_first, f_last)} ({f_first:%H:%M:%S} - {f_last:%H:%M:%S} GPST) is "
+                                f"{what} span {span_local(f_first, f_last)} ({f_first:%H:%M:%S} - {f_last:%H:%M:%S} GPST) is "
                                 f"{'covered' if covers else 'NOT covered'} by the base file"))
-            if llh:
+            rover_llh = None
+            if flight is not None:
                 mrk = parse_mrk(flight.mrk)
-                lat = sum(e.lat for e in mrk) / len(mrk)
-                lon = sum(e.lon for e in mrk) / len(mrk)
+                rover_llh = (sum(e.lat for e in mrk) / len(mrk), sum(e.lon for e in mrk) / len(mrk))
+            elif fh.approx_llh:
+                rover_llh = fh.approx_llh[:2]
+            if llh and rover_llh:
+                lat, lon = rover_llh
                 dn = math.radians(lat - llh[0]) * 6371000
                 de = math.radians(lon - llh[1]) * 6371000 * math.cos(math.radians(lat))
                 dist = math.hypot(dn, de)
-                lvl = "PASS" if dist < 15000 else "WARN"
-                checks.append(Check(lvl == "PASS", lvl, f"baseline to flight area {dist / 1000:.2f} km"))
+                if flight is not None:
+                    lvl = "PASS" if dist < 15000 else "WARN"
+                    checks.append(Check(lvl == "PASS", lvl, f"baseline to flight area {dist / 1000:.2f} km"))
+                else:
+                    lvl = "PASS" if dist < 100 else "WARN"  # the virtual station was ordered at the broadcast position
+                    checks.append(Check(lvl == "PASS", lvl, f"baseline to the station's broadcast position {dist:.1f} m"))
     if antex and hdr.ant_type:
         try:
             present = hdr.ant_type[:20].rstrip() in Path(antex).read_text(errors="replace")
