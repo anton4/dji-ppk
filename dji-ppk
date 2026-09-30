@@ -327,7 +327,8 @@ def survey_flags(env: dict[str, str], folder: str) -> list[str]:
     if not sys.stdin.isatty():
         return flags
     print(c(f"\n{folder}: to turn the survey into Manual Calibration coordinates the tool needs what DJI Pilot 2 showed", "bold"))
-    print(c("after the PPP calibration of this log (Enter skips; the survey then reports the antenna position only):", "dim"))
+    print(c("after a calibration on this marker, this or a later visit (Enter skips: the survey then gives the antenna position only,", "dim"))
+    print(c("and you can add the readings later with ./dji-ppk survey <folder> --pole <m> --shown <lat> <lon> <h>):", "dim"))
     try:
         if settings.get("pole_m") is None:
             t = input("  pole height in metres (e.g. 1.8): ").strip().replace(",", ".")
@@ -371,7 +372,16 @@ def act_survey(env: dict[str, str], folder: str, *extra: str) -> int:
     if run_in("ppk", env, "base-survey", cpath(folder), *flags).returncode != 0:
         print(c(f"✘ the survey failed for {folder}", "red", "bold"), file=sys.stderr)
         return 1
-    print(c(f"✔ {folder} surveyed: the Manual Calibration coordinates are in basepoint.txt", "green", "bold"))
+    try:
+        surveyed = json.loads((host_folder(env, folder) / "basepoint.json").read_text()).get("surveyed") or {}
+    except (OSError, ValueError):
+        surveyed = {}
+    if surveyed.get("ground"):
+        print(c(f"✔ {folder} surveyed: the Manual Calibration coordinates are in basepoint.txt", "green", "bold"))
+    else:
+        print(c(f"✔ {folder} surveyed: corrected antenna position in basepoint.txt. For the Manual Calibration ground point add the "
+                f"pole height and the coordinates Pilot 2 shows after a calibration on this marker:", "green", "bold"))
+        print(c(f"    ./dji-ppk survey {folder} --pole <m> --shown <lat> <lon> <h>", "bold"))
     return 0
 
 
