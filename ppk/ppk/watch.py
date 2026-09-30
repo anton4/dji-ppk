@@ -34,11 +34,15 @@ def resolve_base(flight: Flight, base_dir: Path | None, workdir: Path | None = N
     return resolve_base_for_obs(flight.obs, flight.directory, base_dir)
 
 
-def resolve_base_for_obs(obs: Path, directory: Path, base_dir: Path | None, exclude: set[Path] | None = None) -> Path | None:
-    """The first base candidate in `directory`, then `base_dir`, whose span covers the rover `obs`; candidates with
-    navigation files first. `exclude` lists files that are never a base (a base point's own converted RINEX)."""
+def resolve_base_for_obs(obs: Path, directory: Path, base_dir: Path | None, exclude: set[Path] | None = None,
+                         extra_dirs: tuple[Path, ...] = ()) -> Path | None:
+    """The first base candidate in `directory`, then `extra_dirs`, then `base_dir`, whose span covers the rover `obs`;
+    candidates with navigation files first. `exclude` lists files that are never a base (a base point's own RINEX)."""
     span = _span(obs)
     candidates = find_base_candidates(directory)
+    for d in extra_dirs:
+        if d.is_dir():
+            candidates += find_base_candidates(d)
     if base_dir and base_dir.is_dir():
         candidates += find_base_candidates(base_dir)
     if exclude:

@@ -156,7 +156,7 @@ def accuracy_text(summary_path: Path) -> str:
     return f"H {h}  V {v}"
 
 
-def basepoint_status(bp, base_dir: Path | None, now: datetime | None = None) -> FolderStatus:
+def basepoint_status(bp, base_dir: Path | None, now: datetime | None = None, root: Path | None = None) -> FolderStatus:
     """A D-RTK 3 base point folder: logs, their span, the covering Virtual RINEX, the survey result, next step."""
     from .basepoint import obs_span, JSON_NAME
     from .watch import resolve_base_for_obs
@@ -171,15 +171,17 @@ def basepoint_status(bp, base_dir: Path | None, now: datetime | None = None) -> 
         first = f if first is None or f < first else first
         last = l if last is None or l > last else last
     flown = span_local(first, last) if first and last else ("DAT not converted yet" if not converted else "?")
-    bases = {obs: resolve_base_for_obs(obs, bp.directory, base_dir, bp.own_files()) for _l, obs in converted}
-    if converted and all(bases.values()):
-        names = sorted({b.name for b in bases.values()})
-        if all(has_nav_files(b) for b in bases.values()):
-            base, base_ok = ", ".join(names), True
-        else:
-            base, base_ok = ", ".join(names) + " (no nav files)", False
+    surveyable = bp.surveyable()  # the 2 min log written during the calibration is not surveyed, so it needs no base
+    bases = {obs: resolve_base_for_obs(obs, bp.directory, base_dir, bp.own_files(), bp.base_search_dirs()) for _l, obs in surveyable}
+    good = {obs: b for obs, b in bases.items() if b is not None and has_nav_files(b)}
+    if bases and len(good) == len(bases):
+        base, base_ok = ", ".join(sorted({b.name for b in good.values()})), True
+    elif good:
+        base, base_ok = ", ".join(sorted({b.name for b in good.values()})) + f" ({len(good)} of {len(bases)} sessions)", True
     elif any(bases.values()):
-        base, base_ok = "partial", False
+        base, base_ok = ", ".join(sorted({b.name for b in bases.values() if b})) + " (no nav files)", False
+    elif converted and not surveyable:
+        base, base_ok = "missing (no session long enough)", False
     else:
         base, base_ok = "missing", False
     newest_input = max(p.stat().st_mtime for l in bp.logs for p in (l.obs, l.nav, l.dat, l.mrk) if p is not None)
@@ -205,7 +207,7 @@ def basepoint_status(bp, base_dir: Path | None, now: datetime | None = None) -> 
     days_left = rinex_days_left(first, now) if first else None
     if not base_ok and nxt != NEXT_DONE and days_left is not None and days_left < 0:
         nxt = NEXT_EXPIRED
-    return FolderStatus(bp.name, str(bp.directory), n_sessions, 0, flown, base, base_ok, result, nxt, days_left, "", "basepoint")
+    return FolderStatus(bp.label(root), str(bp.directory), n_sessions, 0, flown, base, base_ok, result, nxt, days_left, "", "basepoint")
 
 
 def scan_status(root: Path, base_dir: Path | None) -> list[FolderStatus]:
@@ -214,7 +216,7 @@ def scan_status(root: Path, base_dir: Path | None) -> list[FolderStatus]:
     groups = group_by_folder(find_flights(root))
     rows = [folder_status(d, fls, base_dir) for d, fls in sorted(groups.items())]
     flight_dirs = {d.resolve() for d in groups}
-    rows += [basepoint_status(bp, base_dir) for bp in find_basepoints(root) if bp.directory.resolve() not in flight_dirs]
+    rows += [basepoint_status(bp, base_dir, root=root) for bp in find_basepoints(root) if bp.directory.resolve() not in flight_dirs]
     return sorted(rows, key=lambda r: r.folder)
 
 

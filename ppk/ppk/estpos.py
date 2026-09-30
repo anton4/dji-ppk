@@ -133,13 +133,20 @@ def order_for_span(first_gpst: datetime, last_gpst: datetime, lat: float, lon: f
     return EstposOrder(lat, lon, height, height_source, first_gpst, last_gpst, start, end)
 
 
-def plan_basepoint_orders(bp, buffer_minutes: int = 5, max_hours: float = 6.0) -> list[tuple[EstposOrder, list[Path]]]:
-    """Orders for a D-RTK 3 base point: one per converted log (obs), at the position the station broadcast
-    (RTCM 1005 -> RINEX header). Logs whose spans fit into `max_hours` together share one order. A single log
-    longer than the limit is cut to its first `max_hours`: the static survey needs no more than that."""
+def plan_basepoint_orders(bp, buffer_minutes: int = 5, max_hours: float = 6.0,
+                          skip: set[Path] | None = None) -> list[tuple[EstposOrder, list[Path]]]:
+    """Orders for a D-RTK 3 base point: one per surveyable session (obs), at the position the station broadcast
+    (RTCM 1006 -> RINEX header). Sessions whose spans fit into `max_hours` together share one order. A single
+    session longer than the limit is cut to its first `max_hours`: the static survey needs no more than that.
+    `skip` lists sessions that need no order (a base file already covers them)."""
     from .basepoint import obs_span, broadcast_position
     items = []
-    for dat, obs in bp.converted():
+    if not bp.surveyable():
+        raise FileNotFoundError(f"{bp.directory}: no session RINEX long enough to survey; run `ppk base-survey <folder> --inspect` "
+                                "(it lists the sessions and converts a DAT-only one)")
+    for _log, obs in bp.surveyable():
+        if skip and obs in skip:
+            continue
         hdr, llh = broadcast_position(obs)
         if llh is None:
             raise ValueError(f"{obs.name}: no APPROX POSITION in the header (the log carries no RTCM 1005/1006); "
@@ -150,7 +157,7 @@ def plan_basepoint_orders(bp, buffer_minutes: int = 5, max_hours: float = 6.0) -
             last = first + limit
         items.append((obs, first, last, llh))
     if not items:
-        raise FileNotFoundError(f"{bp.directory}: no session RINEX yet; run `ppk base-survey <folder> --inspect` first (it converts a DAT-only session)")
+        return []
     items.sort(key=lambda it: it[1])
     clusters: list[list[int]] = []
     for i, (_obs, f, l, _llh) in enumerate(items):

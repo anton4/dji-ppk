@@ -142,9 +142,12 @@ Once per site:
 1. Mark the point (nail, paint). Set the station up plumb over it, calibrate as usual (PPP or network RTK), **write
    down the coordinates and the pole height Pilot 2 shows**, fly.
 2. Afterwards connect the D-RTK 3 to a computer over USB-C and copy that day's `DRTK3_*` files (OBS, NAV, MRK, and the
-   dat if you like) into a folder under `FLIGHTS_DIR`, e.g. `FLIGHTS_DIR/yard-basepoint/`. Any folder with the
-   station's logs and no drone flight is a base point. Take the long session recorded after the calibration
-   settled, not the two-minute one written during it: the report lists every session and the calibration log.
+   dat if you like) into a folder of their own: either directly under `FLIGHTS_DIR`, e.g. `FLIGHTS_DIR/yard-basepoint/`,
+   or inside that day's flight folder, e.g. `FLIGHTS_DIR/DJI_..._040_yard/d-rtk3/`. Any folder with the station's
+   logs and no drone flight is a base point. Inside a flight folder it reuses the flight's Virtual RINEX when that
+   covers the session (no new order) and the flight's own result is the cross-check. Take the long session recorded
+   after the calibration settled, not the two-minute one written during it: the report lists every session and the
+   calibration log; sessions under 10 min are listed but not surveyed.
 3. `./dji-ppk` shows the folder with `survey` as its next step; START (or `./dji-ppk survey yard-basepoint`) asks
    once for the pole height and the shown coordinates, orders the Virtual RINEX at the broadcast position, runs the
    static solution and writes `basepoint.txt` with the block to type into Pilot 2:

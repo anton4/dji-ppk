@@ -109,6 +109,7 @@ def need_env() -> dict[str, str]:
         die(".env is missing: cp .env.example .env and set FLIGHTS_DIR (and ESTPOS_USER / ESTPOS_PASSWORD for ordering)")
     if subprocess.run(["docker", "compose", "version"], capture_output=True).returncode != 0:
         die("docker compose (v2 plugin) is not available; install Docker with the compose plugin")
+    _ENV.update(read_env())
     return read_env()
 
 
@@ -193,8 +194,24 @@ def run_in(service: str, env: dict[str, str], *args: str, capture: bool = False)
     return compose("run", "--rm", "-T", "-e", f"PPK_COLOR={1 if COLOR and not capture else 0}", service, *args, capture=capture)
 
 
+_ENV: dict[str, str] = {}  # the .env, for path mapping (set by need_env)
+
+
+def rel_folder(folder: str) -> str:
+    """A folder argument as a path relative to FLIGHTS_DIR: a bare name, 'flight/d-rtk3' (a base point inside a
+    flight folder), or a host path anywhere under FLIGHTS_DIR."""
+    p = Path(folder.rstrip("/"))
+    root = Path(_ENV.get("FLIGHTS_DIR") or ".").expanduser()
+    try:
+        if p.is_absolute() or p.exists():
+            return p.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return p.name
+    return p.name if ".." in p.parts else p.as_posix()  # not on the host: a name (or sub-path) inside FLIGHTS_DIR
+
+
 def cpath(folder: str) -> str:
-    return f"{FLIGHTS}/{Path(folder.rstrip('/')).name}"
+    return f"{FLIGHTS}/{rel_folder(folder)}"
 
 
 # ----------------------------------------------------------------------------- status
@@ -284,7 +301,7 @@ PORTAL_DOWN = 4  # exit code of estpos-order / estpos-download when the ESTPOS b
 
 
 def host_folder(env: dict[str, str], folder: str) -> Path:
-    return Path(env.get("FLIGHTS_DIR") or ".").expanduser() / Path(folder.rstrip("/")).name
+    return Path(env.get("FLIGHTS_DIR") or ".").expanduser() / rel_folder(folder)
 
 
 def folder_is_basepoint(env: dict[str, str], folder: str) -> bool:
