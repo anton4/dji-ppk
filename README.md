@@ -139,8 +139,10 @@ calibration it gives the corrected ground point, with the same pole height. The 
 
 Once per site:
 
-1. Mark the point (nail, paint). Set the station up plumb over it, calibrate as usual (PPP or network RTK), **write
-   down the coordinates and the pole height Pilot 2 shows**, fly.
+1. Mark the point (nail, paint): the coordinates belong to that spot to the centimetre. Set the station up plumb over
+   it, calibrate as usual (PPP or network RTK), **write down the coordinates and the pole height Pilot 2 shows**, fly.
+   Forgotten? The survey still gives the corrected antenna position; note them at the next calibration on the same
+   marker and rerun with `--shown` and `--pole`, no new survey needed.
 2. Afterwards connect the D-RTK 3 to a computer over USB-C and copy that day's `DRTK3_*` files (OBS, NAV, MRK, and the
    dat if you like) into a folder of their own: either directly under `FLIGHTS_DIR`, e.g. `FLIGHTS_DIR/yard-basepoint/`,
    or inside that day's flight folder, e.g. `FLIGHTS_DIR/DJI_..._040_yard/d-rtk3/`. Any folder with the station's
@@ -175,16 +177,27 @@ Every later visit: same marker, same pole height, Manual Calibration with the sa
 the first such flight once with the normal pipeline: its "RTK base offset" should now be within 2-3 cm of zero.
 Re-survey only when the marker or the pole changes; a second log of the same point is reported next to the first.
 
-Verified on real files (2026-09-27): the OBS header position equals the RTCM 1006 position in the `.dat` to 0.3 mm,
-the `.MRK` is the PPP convergence log (single for 30 s, then a held position that keeps moving for about 23 min
-before it settles; a session recorded before that inherits the unsettled position), and the DJI Assistant 2 "log
-export" is an encrypted diagnostics bundle without GNSS data. Still open until the first survey: whether Pilot 2
-displays the ground point or the antenna; the "phase centre above the pole tip" line should be a stable value of
-roughly 0.1-0.2 m, and reads "the app shows the antenna" otherwise. A `.dat` without its OBS is converted with
-`convbin` (`<session>_convbin.log`). The 90-day ESTPOS retention applies to the session's date like to a flight. The
-solution is the D-RTK 3 phase centre without an antenna model (it is not in the IGS ANTEX), which is the same
-reference DJI's own coordinate uses, so the correction is consistent. The ESTPOS portal's own computation service
-(Järeltöötlemine → Arvutamine: upload the OBS, get EUREF-EST97 coordinates) is an independent check.
+Which correction is applied. The survey's correction (static solution minus broadcast position) puts the antenna on
+its true phase centre as RTKLIB sees the station's antenna without a model. The drone-derived correction (the mean
+on-board-RTK-vs-PPK offset of a same-day flight) is what makes the drone's RTK agree with the PPK result, and it
+absorbs the antenna modelling differences between DJI's RTK chain and RTKLIB. On the first real survey (2026-09-27,
+two sessions 2 and 22 min long, surveyed positions 5 mm apart although the station had broadcast positions 2.4 m
+apart) the two corrections agreed to 1.2 cm horizontally but differed by 8.7 cm in height. Since the point exists to
+make the drone's RTK right, the drone-derived correction is applied when a processed same-day flight exists and its
+horizontal part agrees with the survey within 3 cm; the survey is then the independent check. `--correction survey`
+or `flight` forces one. Both are in the report and in `basepoint.json`.
+
+Verified on real files: the OBS header position equals the RTCM 1006 position in the `.dat` to 0.3 mm, the `.MRK` is
+the PPP convergence log (single for 30 s, then a held position that keeps moving for about 23 min before it settles;
+a session recorded before that inherits the unsettled position), and the DJI Assistant 2 "log export" is an encrypted
+diagnostics bundle without GNSS data. Still open: whether Pilot 2 displays the ground point or the antenna; the "phase
+centre above the pole tip" line should be a stable value of roughly 0.1-0.2 m, and reads "the app shows the antenna"
+otherwise. The shown coordinates may come from any calibration on the same marker, also a later one: the tool pairs
+them with the session whose broadcast position is nearest, derives the phase-centre offset `k` from that pair and
+remembers it, so later surveys need only the pole height. A `.dat` without its OBS is converted with `convbin`
+(`<session>_convbin.log`). The 90-day ESTPOS retention applies to the session's date like to a flight. The ESTPOS
+portal's own computation service (Järeltöötlemine → Arvutamine: upload the OBS, get EUREF-EST97 coordinates) is an
+independent check.
 
 ## Ordering from the ESTPOS portal
 

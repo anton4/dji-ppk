@@ -321,32 +321,77 @@ def reduce_static(rows: list[PosRow]) -> dict:
 
 # ----------------------------------------------------------------------------- the point
 
+def correction_mm(broadcast: tuple[float, float, float], surveyed: tuple[float, float, float]) -> dict:
+    dn, de, du = ned_difference(*broadcast, *surveyed)
+    return {"north": round(1000 * dn, 1), "east": round(1000 * de, 1), "up": round(1000 * du, 1),
+            "horizontal": round(1000 * math.hypot(dn, de), 1)}
+
+
+def flight_correction(crosschecks: list[dict]) -> dict | None:
+    """The base error as the drone saw it: mean of the on-board-RTK-vs-PPK offsets of the overlapping flights."""
+    rows = [cc for cc in crosschecks if "north" in cc]
+    if not rows:
+        return None
+    n = statistics.fmean(cc["north"] for cc in rows)
+    e = statistics.fmean(cc["east"] for cc in rows)
+    u = statistics.fmean(cc["up"] for cc in rows)
+    return {"north": round(n, 1), "east": round(e, 1), "up": round(u, 1), "horizontal": round(math.hypot(n, e), 1),
+            "flights": sorted({cc["flight"] for cc in rows})}
+
+
+def choose_correction(survey: dict | None, flight: dict | None, mode: str = "auto") -> tuple[dict | None, str, str]:
+    """Which correction to apply to the broadcast position: (correction, source, reason).
+
+    The survey correction puts the broadcast on the true phase centre as RTKLIB sees the station's own antenna. The
+    flight correction is what makes the drone's on-board RTK agree with the PPK result: it absorbs the antenna
+    modelling differences between DJI's RTK chain and RTKLIB (they showed up as ~9 cm in height on the first real
+    survey while the horizontal parts agreed to 1 cm). Since the point exists to make the drone's RTK right, the flight
+    correction wins when there is one and its horizontal part agrees with the survey within CROSSCHECK_WARN_MM."""
+    if mode == "survey" or flight is None or survey is None:
+        if survey is None:
+            return None, "none", "no broadcast position in the session: the correction cannot be measured"
+        why = "the survey" if flight is None or mode == "survey" else "the survey"
+        return survey, "survey", f"{why} (static solution of the station's own log)" + ("" if flight is None or mode != "survey" else ", as requested")
+    dh = math.hypot(flight["north"] - survey["north"], flight["east"] - survey["east"])
+    if mode == "flight" or dh <= CROSSCHECK_WARN_MM:
+        return flight, "flight", (f"the drone's on-board RTK vs PPK of flight {', '.join(flight['flights'])}: it makes the drone agree with the "
+                                  f"PPK result; its horizontal part agrees with the survey within {dh / 10:.1f} cm")
+    return survey, "survey", (f"the survey; the flight-derived correction differs horizontally by {dh / 10:.1f} cm, more than "
+                              f"{CROSSCHECK_WARN_MM / 10:.0f} cm, so it is not trusted (different base position during the flight?)")
+
+
 def derive_point(broadcast: tuple[float, float, float] | None, surveyed: tuple[float, float, float],
-                 shown: tuple[float, float, float] | None, pole: float | None, k: float | None) -> dict:
+                 shown: tuple[float, float, float] | None, pole: float | None, k: float | None,
+                 correction: dict | None = None) -> dict:
     """Correction and Manual Calibration coordinates.
 
-    broadcast: what the D-RTK 3 transmitted (phase centre, RTCM 1006).  surveyed: the static solution (phase centre).
-    shown: the ground point DJI Pilot 2 displayed after the calibration of that session.  pole: pole height then.
-    k: phase-centre height above the pole tip, once known from an earlier survey (h_broadcast - h_shown - pole).
+    broadcast: what the D-RTK 3 transmitted (phase centre, RTCM 1006) in the session the shown coordinates belong to.
+    surveyed: the static solution (phase centre).  shown: the ground point DJI Pilot 2 displayed after the calibration
+    of that session.  pole: pole height then.  k: phase-centre height above the pole tip, once known from an earlier
+    survey (h_broadcast - h_shown - pole).  correction: the north/east/up shift (mm) to apply to the broadcast
+    position; default surveyed - broadcast.
 
-    correction = surveyed - broadcast (north/east/up).  ground = shown + correction, or surveyed - (pole + k) up when
-    the shown coordinates are unknown but k is.  The sign convention matches outputs.rtk_vs_ppk (true minus DJI).
+    antenna = broadcast + correction.  ground = shown + correction, or antenna - (pole + k) up when the shown
+    coordinates are unknown but k is.  The sign convention matches outputs.rtk_vs_ppk (true minus DJI).
     """
     out: dict = {"surveyed": {"lat": surveyed[0], "lon": surveyed[1], "h": surveyed[2]}}
     if broadcast:
-        dn, de, du = ned_difference(*broadcast, *surveyed)
         out["broadcast"] = {"lat": broadcast[0], "lon": broadcast[1], "h": broadcast[2]}
-        out["correction_mm"] = {"north": round(1000 * dn, 1), "east": round(1000 * de, 1), "up": round(1000 * du, 1),
-                                "horizontal": round(1000 * math.hypot(dn, de), 1)}
+        out["survey_correction_mm"] = correction_mm(broadcast, surveyed)
+        corr = correction or out["survey_correction_mm"]
+        out["correction_mm"] = corr
+        lat, lon, h = apply_ned_offset(*broadcast, corr["north"] / 1000, corr["east"] / 1000, -corr["up"] / 1000)
+        out["antenna"] = {"lat": lat, "lon": lon, "h": h}
         if shown and pole is not None:
             out["k_m"] = round(broadcast[2] - shown[2] - pole, 4)
-    if shown and broadcast:
-        dn, de, du = ned_difference(*broadcast, *surveyed)
-        lat, lon, h = apply_ned_offset(*shown, dn, de, -du)
-        out["ground"] = {"lat": lat, "lon": lon, "h": h, "pole_m": pole, "method": "shown coordinates + correction"}
-    elif pole is not None and k is not None:
-        out["ground"] = {"lat": surveyed[0], "lon": surveyed[1], "h": surveyed[2] - pole - k, "pole_m": pole,
-                         "method": f"surveyed phase centre - pole {pole:.3f} m - phase-centre offset {k:.3f} m"}
+        if shown:
+            lat, lon, h = apply_ned_offset(*shown, corr["north"] / 1000, corr["east"] / 1000, -corr["up"] / 1000)
+            out["ground"] = {"lat": lat, "lon": lon, "h": h, "pole_m": pole, "method": "shown coordinates + correction"}
+            return out
+    antenna = out.get("antenna") or out["surveyed"]
+    if pole is not None and k is not None:
+        out["ground"] = {"lat": antenna["lat"], "lon": antenna["lon"], "h": antenna["h"] - pole - k, "pole_m": pole,
+                         "method": f"corrected antenna phase centre - pole {pole:.3f} m - phase-centre offset {k:.3f} m"}
     return out
 
 
@@ -407,6 +452,11 @@ def format_report(bp: BasePoint, sessions: list[dict], point: dict, settings: di
     for cc in crosschecks:
         lines.append(f" Cross-check, flight {cc['flight']} (drone on-board RTK vs PPK): {cc['north']:+.0f} mm N, {cc['east']:+.0f} mm E, "
                      f"{cc['up']:+.0f} mm up -> [{cc['level']}] differs by {cc['diff_mm'] / 10:.1f} cm")
+    if point.get("correction_mm"):
+        cm = point["correction_mm"]
+        lines.append(f" Correction applied: {cm['north']:+.0f} mm N, {cm['east']:+.0f} mm E, {cm['up']:+.0f} mm up, from {point.get('correction_reason', '?')}")
+        a = point["antenna"]
+        lines.append(f" Corrected antenna phase centre (EUREF-EST97):  {a['lat']:.8f}  {a['lon']:.8f}  {a['h']:.3f} m")
     lines.append("-" * w)
     shown = settings.get("shown")
     pole = settings.get("pole_m")
@@ -428,11 +478,12 @@ def format_report(bp: BasePoint, sessions: list[dict], point: dict, settings: di
                   f"   ({dms_text(g['lat'], g['lon'])})",
                   f"   derived as: {g['method']}"]
     else:
-        s = point["surveyed"]
-        lines += ["", " Surveyed antenna phase centre (EUREF-EST97, ellipsoidal height):",
+        s = point.get("antenna") or point["surveyed"]
+        lines += ["", " Corrected antenna phase centre (EUREF-EST97, ellipsoidal height):",
                   f"   {s['lat']:.8f}  {s['lon']:.8f}  {s['h']:.3f} m   ({dms_text(s['lat'], s['lon'])})",
-                  " To get the ground point for Manual Calibration, rerun with the coordinates DJI Pilot 2 showed after the",
-                  " calibration of this session and the pole height:  ppk base-survey <folder> --shown <lat> <lon> <h> --pole <m>"]
+                  " The ground point for Manual Calibration also needs the pole height and the coordinates DJI Pilot 2 showed after",
+                  " a calibration on this marker (any session in this folder): ppk base-survey <folder> --shown <lat> <lon> <h> --pole <m>",
+                  " Once the phase-centre offset k is known (from any such session) the shown coordinates are not needed again."]
     lines.append("=" * w)
     return "\n".join(lines)
 

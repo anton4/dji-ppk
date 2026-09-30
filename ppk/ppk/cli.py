@@ -620,18 +620,27 @@ def cmd_base_survey(a: argparse.Namespace) -> int:
     best = max(usable, key=lambda x: x["static"]["fixed"])
     st = best["static"]
     surveyed = (st["lat"], st["lon"], st["h"])
-    bc = best.get("broadcast")
     shown = settings.get("shown")
+    # the shown coordinates belong to one calibration: the session whose broadcast position is nearest to them
+    ref = best
+    with_bc = [x for x in usable if x.get("broadcast")]
+    if shown and with_bc:
+        ref = min(with_bc, key=lambda x: math.hypot(*ned_difference(x["broadcast"]["lat"], x["broadcast"]["lon"], 0.0, shown["lat"], shown["lon"], 0.0)[:2]))
+    bc = ref.get("broadcast")
+    survey_corr = bpm.correction_mm((bc["lat"], bc["lon"], bc["h"]), surveyed) if bc else None
+    root = Path(a.flights_dir) if a.flights_dir else Path(DEFAULT_FLIGHTS_DIR) if Path(DEFAULT_FLIGHTS_DIR).is_dir() else bp.directory.parent
+    crosschecks = bpm.flight_crosschecks(root, min(x["first_gpst"] for x in sessions), max(x["last_gpst"] for x in sessions),
+                                         survey_corr, exclude=bp.directory)
+    corr, source, reason = bpm.choose_correction(survey_corr, bpm.flight_correction(crosschecks), a.correction)
     point = bpm.derive_point((bc["lat"], bc["lon"], bc["h"]) if bc else None, surveyed,
-                             (shown["lat"], shown["lon"], shown["h"]) if shown else None, settings.get("pole_m"), settings.get("k_m"))
-    point["result_stem"] = best["stem"]
+                             (shown["lat"], shown["lon"], shown["h"]) if shown else None, settings.get("pole_m"), settings.get("k_m"),
+                             correction=corr)
+    point["result_stem"], point["reference_stem"] = best["stem"], ref["stem"]
+    point["correction_source"], point["correction_reason"] = source, reason
     if len(usable) > 1:
         others = [x for x in usable if x is not best]
         point["disagreement_mm"] = round(max(1000 * math.dist(  # 3D, via local NEU
             (0.0, 0.0, 0.0), ned_difference(*surveyed, x["static"]["lat"], x["static"]["lon"], x["static"]["h"])) for x in others), 1)
-    root = Path(a.flights_dir) if a.flights_dir else Path(DEFAULT_FLIGHTS_DIR) if Path(DEFAULT_FLIGHTS_DIR).is_dir() else bp.directory.parent
-    crosschecks = bpm.flight_crosschecks(root, min(x["first_gpst"] for x in sessions), max(x["last_gpst"] for x in sessions),
-                                         point.get("correction_mm"), exclude=bp.directory)
     if point.get("k_m") is not None and 0.0 < point["k_m"] < 0.5:
         settings["k_m"] = point["k_m"]  # remembered: later surveys can derive the ground point without the shown coordinates
     settings["surveyed"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "rtklib": rtklib_version(), "conf": str(a.conf),
@@ -788,6 +797,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="coordinates DJI Pilot 2 displayed after that calibration: decimal degrees and ellipsoidal height")
     s.add_argument("--name", help="a name for the point (site), kept in basepoint.json")
     s.add_argument("--k", type=float, help="phase-centre height above the pole tip (m), if known; normally derived and remembered")
+    s.add_argument("--correction", choices=("auto", "survey", "flight"), default="auto",
+                   help="which correction to apply to the broadcast position: the static survey, the drone-derived offset of a same-day "
+                        "flight (makes the drone's RTK agree with the PPK result), or auto: the flight's when its horizontal part agrees "
+                        "with the survey (default)")
     s.add_argument("--inspect", action="store_true", help="only list the sessions (span, epochs, broadcast position) and the calibration "
                    "logs; converts DAT-only sessions to RINEX")
     s.add_argument("--reconvert", action="store_true", help="convert a DAT-only session again even if its RINEX is newer")
