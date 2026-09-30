@@ -40,6 +40,7 @@ STATION_EXT = {".obs", ".nav", ".dat", ".mrk"}
 JSON_NAME = "basepoint.json"
 REPORT_NAME = "basepoint.txt"
 MIN_FIXED_EPOCHS = 100
+MIN_SESSION_EPOCHS = 600  # 10 min at 1 Hz: shorter sessions (the 2 min log written during the calibration) are not surveyed
 GOOD_FIX_RATIO = 0.9     # below: WARN
 USABLE_FIX_RATIO = 0.5   # below: FAIL
 CROSSCHECK_WARN_MM = 30  # drone-derived base offset vs this survey
@@ -106,6 +107,19 @@ class BasePoint:
             out.append((log, obs))
         return out
 
+    def surveyable(self) -> list[tuple[StationLog, Path]]:
+        """Converted sessions long enough for a static survey; the 2 min log the station writes while it is being
+        calibrated is not (it also carries the unsettled position)."""
+        out = []
+        for log, obs in self.converted():
+            try:
+                _f, _l, n = obs_span(obs)
+            except (OSError, ValueError):
+                continue
+            if n >= MIN_SESSION_EPOCHS:
+                out.append((log, obs))
+        return out
+
     def own_files(self) -> set[Path]:
         """Files of the station itself: never base candidates."""
         out = set()
@@ -114,6 +128,28 @@ class BasePoint:
                 if p is not None:
                     out.add(p.resolve())
         return out
+
+    def parent_flight_dir(self) -> Path | None:
+        """The flight folder this base point sits in (`<flight>/d-rtk3/`), whose Virtual RINEX may cover the session."""
+        parent = self.directory.parent
+        try:
+            has_flight = any(p.is_file() and p.name.upper().startswith("DJI_") and p.suffix.lower() == ".obs" for p in parent.iterdir())
+        except OSError:
+            return None
+        return parent if has_flight else None
+
+    def base_search_dirs(self) -> tuple[Path, ...]:
+        parent = self.parent_flight_dir()
+        return (parent,) if parent else ()
+
+    def label(self, root: Path | None) -> str:
+        """The folder as the status table names it: relative to the flights directory when nested."""
+        if root is not None:
+            try:
+                return self.directory.resolve().relative_to(Path(root).resolve()).as_posix()
+            except ValueError:
+                pass
+        return self.name
 
     def settings(self) -> dict:
         try:
@@ -147,8 +183,9 @@ def basepoint_at(path: str | Path) -> BasePoint | None:
     return BasePoint(directory, logs) if any(l.is_session for l in logs) else None
 
 
-def find_basepoints(root: str | Path, max_depth: int = 1) -> list[BasePoint]:
-    """Base point folders under root (root itself included), up to max_depth levels down; dot-folders skipped."""
+def find_basepoints(root: str | Path, max_depth: int = 2) -> list[BasePoint]:
+    """Base point folders under root (root itself included), up to max_depth levels down; dot-folders skipped.
+    Depth 2 reaches a station folder kept inside its flight folder (`<flight>/d-rtk3/`)."""
     root = Path(root)
     out: list[BasePoint] = []
 

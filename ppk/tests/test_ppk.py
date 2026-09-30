@@ -525,6 +525,16 @@ STEM = "DRTK3_0041_20260912083000_8PHDN9B00AG8UN"
 HELD = "58.40039533,Lat\t26.73652104,Lon\t75.865,Ellh"
 
 
+def _epochs(first: datetime, last: datetime, step_s: int = 10) -> str:
+    """RINEX 3 epoch lines from first to last (inclusive), enough of them for a surveyable session."""
+    out, t = [], first
+    while t < last:
+        out.append(f"> {t:%Y %m %d %H %M} {t.second:2d}.0000000  0  1")
+        t += timedelta(seconds=step_s)
+    out.append(f"> {last:%Y %m %d %H %M} {last.second:2d}.0000000  0  1")
+    return "\n".join(out) + "\n"
+
+
 def _log_obs(text_header: str, epochs: str) -> str:
     """A D-RTK 3 session OBS: the Virtual RINEX fixture header (it has an APPROX POSITION) plus epoch records."""
     return text_header + epochs
@@ -534,7 +544,7 @@ def _basepoint_dir(tmp_path, name="site-basepoint", native=True, with_mrk=False)
     """A base point folder like the station's storage: DRTK3_<seq>_<time>_<serial>.OBS/.NAV (native RINEX), or a
     DAT-only session that needs convbin."""
     d = tmp_path / name; d.mkdir()
-    epochs = "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 08 29 59.0000000  0  1\n"
+    epochs = _epochs(datetime(2026, 9, 12, 6, 30), datetime(2026, 9, 12, 8, 29, 59))
     if native:
         (d / f"{STEM}.OBS").write_text(_log_obs((FIX / "base_header.26o").read_text(), epochs))
         (d / f"{STEM}.NAV").write_text("     3.05           N: GNSS NAV DATA    M: Mixed            RINEX VERSION / TYPE\n"
@@ -583,9 +593,15 @@ def test_basepoint_discovery_and_orders(tmp_path):
     assert "base point: site-basepoint" in text and "ppk base-survey" in text
     # a session longer than the portal limit is cut to its first hours
     (d / f"{STEM}.OBS").write_text(_log_obs((FIX / "base_header.26o").read_text(),
-                                            "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 18 29 59.0000000  0  1\n"))
+                                            _epochs(datetime(2026, 9, 12, 6, 30), datetime(2026, 9, 12, 18, 29, 59), 60)))
     order, _ = plan_basepoint_orders(bp, buffer_minutes=5, max_hours=6)[0]
     assert order.duration <= timedelta(hours=6)
+    # a session shorter than 10 min is not surveyed and gets no order
+    (d / f"{STEM}.OBS").write_text(_log_obs((FIX / "base_header.26o").read_text(),
+                                            _epochs(datetime(2026, 9, 12, 6, 30), datetime(2026, 9, 12, 6, 32), 1)))
+    assert bp.converted() and not bp.surveyable()
+    with pytest.raises(FileNotFoundError):
+        plan_basepoint_orders(bp)
 
 
 def test_calibration_log_summary(tmp_path):
@@ -768,7 +784,7 @@ def test_base_survey_cli_inspect(tmp_path, monkeypatch):
     hdr = (FIX / "base_header.26o").read_text()
 
     def fake_run(cmd, **kw):
-        Path(cmd[cmd.index("-o") + 1]).write_text(_log_obs(hdr, "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 08 29 59.0000000  0  1\n"))
+        Path(cmd[cmd.index("-o") + 1]).write_text(_log_obs(hdr, _epochs(datetime(2026, 9, 12, 6, 30), datetime(2026, 9, 12, 8, 29, 59))))
         return subprocess.CompletedProcess(cmd, 0, stdout="ok\n")
     monkeypatch.setattr(bpm.subprocess, "run", fake_run)
     rc = main(["base-survey", str(d), "--inspect", "--pole", "1.8", "--shown", "58.4", "26.7", "98.36", "--name", "yard"])
@@ -779,3 +795,33 @@ def test_base_survey_cli_inspect(tmp_path, monkeypatch):
     assert main(["base-survey", str(d)]) == 2  # no base file: the order instructions, exit 2
     (tmp_path / "empty").mkdir()
     assert main(["base-survey", str(tmp_path / "empty")]) == 1
+
+
+def test_basepoint_inside_flight_folder(tmp_path):
+    """A station folder kept inside its flight folder is found, labelled by its relative path, reuses the flight's
+    Virtual RINEX when it covers the session, and its files never leak into the flight's own base search."""
+    import shutil
+    from ppk.basepoint import find_basepoints, basepoint_at
+    from ppk.discover import find_flights
+    from ppk.rinex import find_base_candidates
+    from ppk.status import scan_status
+    from ppk.cli import basepoint_bases
+    f = tmp_path / "DJI_202609120900_040_yard"; f.mkdir()
+    shutil.copy(FIX / "sample.obs", f / "DJI_a.OBS"); shutil.copy(FIX / "sample.MRK", f / "DJI_a.MRK"); (f / "DJI_a.NAV").write_text("")
+    d = _basepoint_dir(f, name="d-rtk3")
+    bps = find_basepoints(tmp_path)
+    assert [b.label(tmp_path) for b in bps] == ["DJI_202609120900_040_yard/d-rtk3"]
+    assert bps[0].parent_flight_dir() == f and basepoint_at(tmp_path / "x") is None
+    assert [fl.directory for fl in find_flights(tmp_path)] == [f]  # the nested station folder is not a flight
+    rows = scan_status(tmp_path, None)
+    assert [(r.folder, r.kind, r.base) for r in rows] == [("DJI_202609120900_040_yard", "flight", "missing"),
+                                                         ("DJI_202609120900_040_yard/d-rtk3", "basepoint", "missing")]
+    # the flight's Virtual RINEX covers the station session: reused, nothing to order
+    base = f / "virt255g15.26o"
+    base.write_text((FIX / "base_header.26o").read_text() + "> 2026 09 12 06 00  0.0000000  0  1\n> 2026 09 12 09 00  0.0000000  0  1\n")
+    (f / "virt255g15.26n").write_text("")
+    rows = scan_status(tmp_path, None)
+    assert rows[1].base == "virt255g15.26o" and rows[1].next == "survey"
+    bp = bps[0]
+    assert list(basepoint_bases(bp, None).values()) == [base]
+    assert find_base_candidates(f) == [base]  # the station's OBS in the sub-folder is not seen by the flight

@@ -303,7 +303,8 @@ def _basepoint_arg(arg: str):
 def cmd_estpos_window(a: argparse.Namespace) -> int:
     bp = _basepoint_arg(a.flight)
     if bp:
-        _print_orders(plan_basepoint_orders(bp, a.buffer, a.max_hours))
+        orders = plan_basepoint_orders(bp, a.buffer, a.max_hours)
+        _print_orders(orders)
         return 0
     flights = load_flights(_flight_path(a.flight))
     _print_orders(plan_orders(flights, a.buffer, a.height, a.max_hours))
@@ -337,14 +338,15 @@ def cmd_estpos_order(a: argparse.Namespace) -> int:
     bp = _basepoint_arg(a.flight)
     if bp:
         have = basepoint_bases(bp, DEFAULT_BASE_DIR)
-        if not a.force and have and all(have.values()) and all(has_nav_files(b) for b in have.values()):
-            names = sorted({b.name for b in have.values()})
+        covered = {obs for obs, b in have.items() if b is not None and has_nav_files(b)}
+        name, dest = bp.name, bp.directory
+        orders = plan_basepoint_orders(bp, a.buffer, a.max_hours, skip=None if a.force else covered)
+        if not orders:
+            names = sorted({have[o].name for o in covered})
             print(f"{bp.name}: base file{'s' if len(names) > 1 else ''} {', '.join(names)} already cover"
-                  f"{'s' if len(names) == 1 else ''} every log; nothing to order.")
+                  f"{'s' if len(names) == 1 else ''} every session worth surveying; nothing to order.")
             print(f"Run: ppk base-survey {bp.directory}   (use --force to order anyway)")
             return 0
-        name, dest = bp.name, bp.directory
-        orders = plan_basepoint_orders(bp, a.buffer, a.max_hours)
         rovers = [obs for _o, fls in orders for obs in fls]
     else:
         flights = load_flights(_flight_path(a.flight))
@@ -407,10 +409,11 @@ def cmd_estpos_download(a: argparse.Namespace) -> int:
     if bp:
         name, dest = bp.name, bp.directory
         have = basepoint_bases(bp, DEFAULT_BASE_DIR)
-        if not a.force and have and all(have.values()) and all(has_nav_files(b) for b in have.values()):
-            print(f"{bp.name}: base file {', '.join(sorted({b.name for b in have.values()}))} already covers every log; nothing to download.")
+        covered = {obs for obs, b in have.items() if b is not None and has_nav_files(b)}
+        orders = plan_basepoint_orders(bp, a.buffer, a.max_hours, skip=None if a.force else covered)
+        if not orders:
+            print(f"{bp.name}: base file {', '.join(sorted({have[o].name for o in covered}))} already covers every session worth surveying; nothing to download.")
             return 0
-        orders = plan_basepoint_orders(bp, a.buffer, a.max_hours)
         rovers = [obs for _o, fls in orders for obs in fls]
     else:
         flights = load_flights(_flight_path(a.flight))
@@ -477,13 +480,15 @@ def _report_downloaded_base(path: Path, directory: Path, rovers: list) -> int:
 def basepoint_bases(bp, base_dir: str | None) -> dict[Path, Path | None]:
     """Covering base file per converted log (obs), from the folder or base_dir; the folder's own RINEX never counts."""
     from .watch import resolve_base_for_obs
-    return {obs: resolve_base_for_obs(obs, bp.directory, Path(base_dir) if base_dir else None, bp.own_files())
+    return {obs: resolve_base_for_obs(obs, bp.directory, Path(base_dir) if base_dir else None, bp.own_files(), bp.base_search_dirs())
             for _log, obs in bp.converted()}
 
 
 def _no_base_help_basepoint(bp, base_dir: str | None) -> str:
     lines = ["", "=" * 72, f" No base RINEX covers the D-RTK 3 session(s) of base point {bp.name}", "=" * 72,
              f" Looked in:         {bp.directory}"]
+    for d in bp.base_search_dirs():
+        lines.append(f"                    {d}  (the flight folder around it)")
     if base_dir:
         lines.append(f"                    {base_dir}")
     lines += ["", " What to do:",
@@ -538,8 +543,9 @@ def cmd_base_survey(a: argparse.Namespace) -> int:
                  f"broadcast position lat {llh[0]:.8f} lon {llh[1]:.8f} h {llh[2]:.3f} m" if llh else "NO base position in the header (RTCM 1006 missing)")
         if hdr.ant_type:
             log.info("%s: antenna '%s', delta H/E/N %s", obs.name, hdr.ant_type, hdr.ant_delta_hen)
-        if n < bpm.MIN_FIXED_EPOCHS:
-            log.warning("%s: only %d epochs (%s): too short for a reliable survey, use a longer session", obs.name, n, span_local(first, last))
+        if n < bpm.MIN_SESSION_EPOCHS:
+            log.warning("%s: only %d epochs (%s): shorter than %d min, not surveyed", obs.name, n, span_local(first, last),
+                        bpm.MIN_SESSION_EPOCHS // 60)
         if bpm.rinex_days_left_for(first) < 0:
             log.warning("%s was logged more than %d days ago: ESTPOS has no RINEX for it any more", obs.name, RINEX_RETENTION_DAYS)
     if a.inspect:
@@ -547,12 +553,19 @@ def cmd_base_survey(a: argparse.Namespace) -> int:
         return 0
 
     log.info(ui.step(2, 4, "looking for a covering base file"))
+    surveyable = {obs for _l, obs in bp.surveyable()}
+    if not surveyable:
+        raise RuntimeError("no session is long enough for a survey (the station's 2 min log written during the calibration does not count)")
     bases = basepoint_bases(bp, a.base_dir) if not a.base else {obs: Path(a.base) for _d, obs in bp.converted()}
+    bases = {obs: b for obs, b in bases.items() if obs in surveyable}
     missing = [obs for obs, b in bases.items() if b is None]
-    if missing:
+    if missing and len(missing) == len(bases):
         log.error("no base file covering %s in %s or %s", ", ".join(o.name for o in missing), bp.directory, a.base_dir)
         print(_no_base_help_basepoint(bp, a.base_dir))
         return 2
+    for obs in missing:
+        log.warning("%s: no base file covers it, skipped (order one with ppk estpos-order to include it)", obs.name)
+    bases = {obs: b for obs, b in bases.items() if b is not None}
 
     log.info(ui.step(3, 4, "static solution with %s"), rtklib_version())
     work = bp.directory / "work"
@@ -616,7 +629,7 @@ def cmd_base_survey(a: argparse.Namespace) -> int:
         others = [x for x in usable if x is not best]
         point["disagreement_mm"] = round(max(1000 * math.dist(  # 3D, via local NEU
             (0.0, 0.0, 0.0), ned_difference(*surveyed, x["static"]["lat"], x["static"]["lon"], x["static"]["h"])) for x in others), 1)
-    root = Path(a.flights_dir) if a.flights_dir else bp.directory.parent
+    root = Path(a.flights_dir) if a.flights_dir else Path(DEFAULT_FLIGHTS_DIR) if Path(DEFAULT_FLIGHTS_DIR).is_dir() else bp.directory.parent
     crosschecks = bpm.flight_crosschecks(root, min(x["first_gpst"] for x in sessions), max(x["last_gpst"] for x in sessions),
                                          point.get("correction_mm"), exclude=bp.directory)
     if point.get("k_m") is not None and 0.0 < point["k_m"] < 0.5:
