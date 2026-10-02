@@ -96,6 +96,7 @@ underlying `ppk` command (see below). Without a terminal (pipes, Windows) the me
 | `events.csv` | per photo: image, GPST, camera lat/lon/h, Q, satellites, std, ratio, antenna lat/lon/h, MRK offsets, DJI RTK position |
 | `summary.json` | counts, fix ratios, inputs, versions, RTKLIB standard deviations, on-board RTK vs PPK statistics, per-session summaries |
 | `accuracy.txt` | the short table printed at the end of a run: typical and worst photo error as flown and after PPK, horizontal and vertical |
+| `processing.log` | the whole console output of the run (steps, warnings, all reports), plain text without colors |
 | `<session>_trajectory.pos`, `<session>_trajectory_events.pos` | RTKLIB antenna trajectory (5 Hz) and the solutions at the exposure times |
 | `<session>_*` | several sessions only: per-session `events.csv`, `geo.txt`, `summary.json`, `accuracy.txt`, `rtklib.log`, `rtklib_used.conf` |
 | `compare_report.txt` | only when an Emlid Studio `*_events.pos` is in the folder: photo-by-photo comparison |

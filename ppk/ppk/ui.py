@@ -11,6 +11,9 @@ import os
 import re
 import sys
 import time
+import traceback
+from contextlib import contextmanager
+from pathlib import Path
 
 _CODES = {"bold": "1", "dim": "2", "red": "31", "green": "32", "yellow": "33", "blue": "34", "magenta": "35", "cyan": "36"}
 
@@ -111,3 +114,50 @@ class ColorFormatter(logging.Formatter):
         if record.levelno <= logging.DEBUG:
             return f"{c(ts, 'dim')} {c('DEBUG  ', 'dim')} {c(msg, 'dim')}"
         return f"{c(ts, 'dim')} {c('INFO   ', 'blue')} {msg}"
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+class _PlainFormatter(ColorFormatter):
+    def format(self, record: logging.LogRecord) -> str:
+        return _ANSI.sub("", super().format(record))
+
+
+class _Tee:
+    """stdout that also writes an uncolored copy to a file."""
+
+    def __init__(self, stream, fh):
+        self.stream, self.fh = stream, fh
+
+    def write(self, s: str) -> int:
+        self.fh.write(_ANSI.sub("", s))
+        self.fh.flush()
+        return self.stream.write(s)
+
+    def flush(self) -> None:
+        self.stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
+@contextmanager
+def tee_log(path: Path):
+    """Copy everything printed and logged inside the block, without colors, into `path` (overwritten)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        handler = logging.StreamHandler(fh)
+        handler.setFormatter(_PlainFormatter())
+        root = logging.getLogger()
+        root.addHandler(handler)
+        old_stdout = sys.stdout
+        sys.stdout = _Tee(old_stdout, fh)
+        try:
+            yield
+        except BaseException:
+            fh.write("\n" + traceback.format_exc())
+            raise
+        finally:
+            sys.stdout = old_stdout
+            root.removeHandler(handler)

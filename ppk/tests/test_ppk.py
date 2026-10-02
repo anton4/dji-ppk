@@ -249,6 +249,7 @@ def test_in_short_table():
     shift = next(line for line in text.splitlines() if "constant shift" in line)
     scatter = next(line for line in text.splitlines() if "scatter around" in line)
     assert "37 cm" in shift and "-15 cm" in shift and "17 cm" in scatter and "1.4 cm" in scatter
+    assert "-0 cm" not in format_in_short({**real, "up": {"mean_mm": -4.4, "std_mm": 2.5}}, {})
 
 
 def test_results_layout_and_legacy_cleanup(tmp_path):
@@ -265,6 +266,22 @@ def test_results_layout_and_legacy_cleanup(tmp_path):
     assert sorted(p.name for p in d.iterdir()) == sorted(keep)
     results_dir(d).mkdir(); (results_dir(d) / "summary.json").write_text("{}")
     assert find_summary(d) == d / "ppk" / "summary.json"
+
+
+def test_tee_log(tmp_path, monkeypatch, capsys):
+    import logging, sys
+    from ppk import ui
+    monkeypatch.setenv("PPK_COLOR", "1")
+    stdout = sys.stdout
+    path = tmp_path / "ppk" / "processing.log"
+    with pytest.raises(RuntimeError):
+        with ui.tee_log(path):
+            print(ui.c("hi", "green"))
+            logging.getLogger("ppk").warning("w")
+            raise RuntimeError("boom")
+    text = path.read_text()
+    assert "hi" in text and "WARNING w" in text and "RuntimeError: boom" in text and "\x1b" not in text
+    assert sys.stdout is stdout and "\x1b[32mhi" in capsys.readouterr().out  # the terminal keeps its colors
 
 
 def test_local_time_helpers(monkeypatch):
