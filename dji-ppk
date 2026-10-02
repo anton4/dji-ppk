@@ -11,11 +11,13 @@
   ./dji-ppk dry-run <folder>    fill the portal form, do not submit    ./dji-ppk watch              start the watcher, follow its log
   ./dji-ppk survey <folder>     D-RTK 3 base point (the station's own DRTK3_* logs): order the Virtual RINEX, static survey ->
                                 the coordinates for Manual Calibration (basepoint.txt); START does it for such folders too
-  ./dji-ppk build               (re)build both images
+  ./dji-ppk build [--fresh]     (re)build both images; --fresh without the build cache (new ANTEX, base image updates)
 
 <folder> is a folder name under FLIGHTS_DIR (see .env) or any path to it. Only python3 and docker compose are needed.
 On every start the launcher fetches the git remote, pulls a newer version (clean tree, fast-forward only) and re-runs
 itself, then rebuilds an image that is older than the code before using it. --no-update or DJI_PPK_NO_UPDATE=1 skips that.
+It also prints the components (RTKLIB-EX, Playwright, RNXCMP, Python, Debian, IGS ANTEX) that have a newer version
+than the images are built from, checked once a day; DJI_PPK_NO_VERSION_CHECK=1 skips that.
 """
 from __future__ import annotations
 
@@ -88,6 +90,161 @@ def self_update(argv: list[str]) -> None:
         return
     os.environ["DJI_PPK_NO_UPDATE"] = "1"
     os.execv(sys.executable, [sys.executable, str(Path(__file__).resolve()), *argv])  # run the new launcher
+
+
+# ----------------------------------------------------------------------------- upgrade check
+
+VERSION_CACHE = ROOT / ".version-check.json"  # newest published versions, refreshed once a day
+VERSION_CACHE_HOURS = 24
+
+
+def _vtuple(v: str) -> tuple[int, ...] | None:
+    m = re.fullmatch(r"v?(\d+(?:\.\d+)*)", v.strip())
+    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+
+def _http(url: str, method: str = "GET"):
+    """Body of a GET, or the headers of a HEAD (lower-case keys). curl first: the python.org macOS build has no CA
+    certificates until 'Install Certificates.command' is run, so urllib cannot verify HTTPS there."""
+    import shutil
+    if shutil.which("curl"):
+        r = subprocess.run(["curl", "-fsSL", "-m", "6", "-A", "dji-ppk", *(["-I"] if method == "HEAD" else []), url],
+                           capture_output=True, text=True, timeout=10)
+        if r.returncode != 0:
+            raise OSError(f"curl {url}: exit {r.returncode}")
+        if method != "HEAD":
+            return r.stdout
+        return {k.strip().lower(): v.strip() for k, _, v in (l.partition(":") for l in r.stdout.splitlines()) if v}
+    import urllib.request
+    req = urllib.request.Request(url, method=method, headers={"User-Agent": "dji-ppk"})
+    with urllib.request.urlopen(req, timeout=6) as r:
+        return {k.lower(): v for k, v in r.headers.items()} if method == "HEAD" else r.read().decode(errors="replace")
+
+
+def _json(url: str):
+    return json.loads(_http(url))
+
+
+def fetch_latest() -> dict[str, str]:
+    """Newest published version of each component; a source that cannot be reached is left out."""
+    from concurrent.futures import ThreadPoolExecutor
+    from email.utils import parsedate_to_datetime
+
+    def rnxcmp():
+        found = re.findall(r"RNXCMP_(\d+(?:\.\d+)+)_src\.tar\.gz", _http("https://terras.gsi.go.jp/ja/crx2rnx.html"))
+        return max(found, key=_vtuple)
+
+    sources = {
+        "rtklib": lambda: _json("https://api.github.com/repos/rtklibexplorer/RTKLIB/releases/latest")["tag_name"],
+        "playwright": lambda: _json("https://pypi.org/pypi/playwright/json")["info"]["version"],
+        "rnxcmp": rnxcmp,
+        "python": lambda: str(_json("https://endoflife.date/api/python.json")[0]["cycle"]),  # newest released cycle first
+        "debian": lambda: (lambda d: f"{d['codename'].lower()} ({d['cycle']})")(_json("https://endoflife.date/api/debian.json")[0]),
+        "antex": lambda: parsedate_to_datetime(_http("https://files.igs.org/pub/station/general/igs20.atx", "HEAD")["last-modified"]).strftime("%Y-%m-%d"),
+    }
+    out: dict[str, str] = {}
+    with ThreadPoolExecutor(len(sources)) as pool:
+        futures = {k: pool.submit(fn) for k, fn in sources.items()}
+        for k, f in futures.items():
+            try:
+                out[k] = f.result()
+            except Exception:  # noqa: BLE001 - offline or the page changed: no notice for this one
+                pass
+    return out
+
+
+def latest_versions() -> dict[str, str]:
+    import time
+    try:
+        cached = json.loads(VERSION_CACHE.read_text())
+        if time.time() - cached.get("checked", 0) < VERSION_CACHE_HOURS * 3600:
+            return cached.get("latest", {})
+    except (OSError, ValueError):
+        pass
+    latest = fetch_latest()
+    if latest:
+        try:
+            VERSION_CACHE.write_text(json.dumps({"checked": time.time(), "latest": latest}, indent=1))
+        except OSError:
+            pass
+    return latest
+
+
+def current_versions(env: dict[str, str]) -> dict[str, str]:
+    """What the images are built from: the pins in the Dockerfiles and .env, and the ANTEX download date."""
+    df = (ROOT / "Dockerfile").read_text()
+    dfe = (ROOT / "Dockerfile.estpos").read_text()
+    debian = re.search(r"FROM debian:(\w+)-slim", df)
+    codes = {"bullseye": 11, "bookworm": 12, "trixie": 13, "forky": 14}
+    out = {
+        "rtklib": env.get("RTKLIB_REF") or re.search(r"ARG RTKLIB_REF=(\S+)", df).group(1),
+        "playwright": re.search(r"playwright/python:v([\d.]+)", dfe).group(1),
+        "rnxcmp": re.search(r"RNXCMP_([\d.]+)_src", df).group(1),
+        "python": re.search(r"FROM python:([\d.]+)-slim", df).group(1),
+        "debian": f"{debian.group(1)} ({codes.get(debian.group(1), '?')})",
+    }
+    created = image_created(f"dji-ppk:{env.get('RTKLIB_REF', 'v2.5.1')}") if docker_available() else None
+    if created:
+        from datetime import datetime, timezone
+        out["antex"] = datetime.fromtimestamp(created, timezone.utc).strftime("%Y-%m-%d")
+    return out
+
+
+def docker_available() -> bool:
+    try:
+        return subprocess.run(["docker", "version"], capture_output=True, timeout=5).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+UPGRADE_HOW = {
+    "rtklib": ("RTKLIB-EX", "set RTKLIB_REF={new} in .env, then ./dji-ppk build"),
+    "playwright": ("Playwright", "Dockerfile.estpos: FROM tag and the pip pin to {new}, then ./dji-ppk build"),
+    "rnxcmp": ("RNXCMP (crx2rnx)", "Dockerfile: RNXCMP_{new}_src.tar.gz, then ./dji-ppk build"),
+    "python": ("Python (image)", "Dockerfile: FROM python:{new}-slim, then ./dji-ppk build"),
+    "debian": ("Debian (builder)", "Dockerfile: FROM debian:{new}-slim (both stages' tools must still build), then ./dji-ppk build"),
+    "antex": ("IGS ANTEX igs20.atx", "./dji-ppk build --fresh (the download is cached in the image)"),
+}
+
+
+def upgrades(current: dict[str, str], latest: dict[str, str]) -> list[tuple[str, str, str, str]]:
+    """(name, current, newest, how) for every component with a newer published version."""
+    out = []
+    for key, (name, how) in UPGRADE_HOW.items():
+        cur, new = current.get(key), latest.get(key)
+        if not cur or not new:
+            continue
+        if key == "antex":
+            newer = new > cur  # ISO dates: the file was updated after the image was built
+            cur, new = f"image {cur}", f"updated {new}"
+        elif key == "debian":
+            a, b = re.search(r"\((\d+)\)", cur), re.search(r"\((\d+)\)", new)
+            newer = bool(a and b and int(b.group(1)) > int(a.group(1)))
+        else:
+            a, b = _vtuple(cur), _vtuple(new)
+            newer = bool(a and b and b > a)  # a branch such as RTKLIB_REF=main is not compared
+        if newer:
+            out.append((name, cur, new, how.format(new=latest[key].split()[0])))
+    return out
+
+
+def check_upgrades(env: dict[str, str]) -> None:
+    """Print one line per component that has a newer version than the images are built from."""
+    if os.environ.get("DJI_PPK_NO_VERSION_CHECK"):
+        return
+    try:
+        found = upgrades(current_versions(env), latest_versions())
+    except Exception as exc:  # noqa: BLE001 - never block a run over this
+        print(c(f"upgrade check skipped: {exc}", "dim"), file=sys.stderr)
+        return
+    if not found:
+        return
+    print(c("upgrades available:", "cyan", "bold"), file=sys.stderr)
+    w1, w2 = max(len(f[0]) for f in found), max(len(f"{f[1]} → {f[2]}") for f in found)
+    for name, cur, new, how in found:
+        print(f"  {name:<{w1}}  {c(cur, 'yellow')} → {c(new, 'green')}{' ' * (w2 - len(f'{cur} → {new}'))}  {c(how, 'dim')}",
+              file=sys.stderr)
+    print(file=sys.stderr)
 
 
 # ----------------------------------------------------------------------------- environment
@@ -437,8 +594,9 @@ def act_watch(env: dict[str, str]) -> int:
         return 0
 
 
-def act_build() -> int:
-    return compose("build", "ppk", "ppk-estpos").returncode
+def act_build(fresh: bool = False) -> int:
+    """Rebuild both images; fresh also re-downloads what the build caches (IGS ANTEX, base image updates)."""
+    return compose("build", *(["--no-cache", "--pull"] if fresh else []), "ppk", "ppk-estpos").returncode
 
 
 # ----------------------------------------------------------------------------- menu
@@ -748,7 +906,8 @@ def main(argv: list[str]) -> int:
         s.add_argument("folder")
         s.add_argument("extra", nargs=argparse.REMAINDER)
     sub.add_parser("watch")
-    sub.add_parser("build")
+    s = sub.add_parser("build")
+    s.add_argument("--fresh", action="store_true", help="rebuild without the cache (new ANTEX, base image updates)")
     known = {"status", "run", "order", "download", "process", "window", "dry-run", "survey", "watch", "build", "-h", "--help"}
     if argv and argv[0] not in known and not argv[0].startswith("-"):
         argv = ["run", *argv]  # ./dji-ppk <folder> ... = run: the default is to do everything
@@ -757,12 +916,13 @@ def main(argv: list[str]) -> int:
     elif not argv or argv[0] not in ("-h", "--help"):
         self_update(argv)  # pulls a newer version and re-runs itself; images are rebuilt on first use when stale
     a = ap.parse_args(argv)
+    check_upgrades(read_env())  # newer RTKLIB, Playwright, RNXCMP, Python, Debian or ANTEX than the images use
 
     if a.cmd is None:
         menu(need_env())
         return 0
     if a.cmd == "build":
-        return act_build()
+        return act_build(a.fresh)
     env = need_env()
     if a.cmd == "status":
         rows = status_rows(env)

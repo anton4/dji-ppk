@@ -54,6 +54,13 @@ tree is clean, re-runs itself, and rebuilds an image that is older than the code
 `DJI_PPK_NO_UPDATE=1` skips that. Docker output is shown as is; a missing image is built with visible progress (the
 RTKLIB compile takes a few minutes once).
 
+It also checks, once a day (cached in `.version-check.json`), whether the components the images are built from have a
+newer release: RTKLIB-EX (GitHub release vs `RTKLIB_REF`), Playwright (PyPI vs the `Dockerfile.estpos` tag), RNXCMP,
+Python and Debian base images, and the IGS `igs20.atx` (updated after the image was built). Only components with an
+upgrade are printed, each with the current and the new version and what to change; nothing is upgraded automatically.
+`./dji-ppk build --fresh` rebuilds without the Docker cache, which is what picks up a new ANTEX. Offline, the check
+prints nothing; `DJI_PPK_NO_VERSION_CHECK=1` turns it off.
+
 ### Command line
 
 ```sh
