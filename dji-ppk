@@ -35,7 +35,7 @@ os.chdir(ROOT)
 COLOR = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
 _C = {"bold": "1", "dim": "2", "red": "31", "green": "32", "yellow": "33", "cyan": "36", "magenta": "35"}
 NEXT_STYLE = {"done": ("green",), "order": ("yellow", "bold"), "photos": ("yellow",), "process": ("cyan", "bold"),
-              "reprocess": ("cyan",), "survey": ("cyan", "bold"), "expired": ("red", "bold")}
+              "reprocess": ("cyan",), "survey": ("cyan", "bold"), "expired": ("red", "bold"), "no-times": ("red",)}
 PENDING = ("order", "process", "reprocess", "survey")
 FLIGHTS = "/data/flights"
 
@@ -380,10 +380,34 @@ def status_rows(env: dict[str, str], quiet: bool = False) -> list[dict]:
     if r.returncode != 0:
         die("cannot list flights:\n" + (r.stderr or r.stdout))
     try:
-        return json.loads(r.stdout)
+        return sort_rows(json.loads(r.stdout))
     except json.JSONDecodeError:
         die("unexpected status output:\n" + r.stdout[:500])
     return []
+
+
+UNPROCESSABLE = ("no-times",)  # folders that can never be processed: listed last and dimmed, out of the way
+
+
+def selectable(row: dict) -> bool:
+    """A folder that can never be processed cannot be ticked or run: it is listed for information only."""
+    return row.get("next") not in UNPROCESSABLE
+
+
+def toggle(rows: list[dict], ticked: list[bool], indexes: list[int]) -> list[str]:
+    """Flip the ticks of `indexes`; returns the folders that were left alone because they cannot be processed."""
+    refused = []
+    for i in indexes:
+        if selectable(rows[i]):
+            ticked[i] = not ticked[i]
+        else:
+            refused.append(rows[i]["folder"])
+    return refused
+
+
+def sort_rows(rows: list[dict]) -> list[dict]:
+    """Keep the scan order, but move the folders that can never be processed to the end."""
+    return sorted(rows, key=lambda r: r.get("next") in UNPROCESSABLE)
 
 
 def render_table(rows: list[dict]) -> str:
@@ -398,6 +422,9 @@ def render_table(rows: list[dict]) -> str:
         cells = [str(v).ljust(w) for v, w in zip(row, widths)]
         if n == 0:
             cells = [c(x, "bold") for x in cells]
+        elif row[-1] in UNPROCESSABLE:
+            out.append(c("  ".join(cells).rstrip(), "dim"))
+            continue
         elif row[-1] in NEXT_STYLE:
             cells[-1] = c(cells[-1].rstrip(), *NEXT_STYLE[row[-1]])
         out.append("  ".join(cells).rstrip())
@@ -422,7 +449,8 @@ def legend() -> str:
             + c("reprocess", *NEXT_STYLE["reprocess"]) + " = run it,\n      " + c("done", *NEXT_STYLE["done"])
             + " = nothing to do, " + c("expired", *NEXT_STYLE["expired"])
             + " = older than 90 days, ESTPOS has no RINEX for it any more (only a base file already in the folder helps),\n      "
-            + c("survey", *NEXT_STYLE["survey"]) + " = a D-RTK 3 base point (the station's own logs): order the RINEX, static survey")
+            + c("survey", *NEXT_STYLE["survey"]) + " = a D-RTK 3 base point (the station's own logs): order the RINEX, static survey,\n      "
+            + c("no-times", *NEXT_STYLE["no-times"]) + " = DJI wrote no exposure times into the MRK: cannot be post-processed")
 
 
 # ----------------------------------------------------------------------------- actions
@@ -433,7 +461,8 @@ def banner(text: str) -> None:
 
 def act_order(env, folder, *extra):
     need_creds(env)
-    return run_in("ppk-estpos", env, "estpos-order", cpath(folder), *extra).returncode
+    rc = run_in("ppk-estpos", env, "estpos-order", cpath(folder), *extra).returncode
+    return no_times_skipped(folder) if rc == NO_TIMES else rc
 
 
 def act_download(env, folder, *extra):
@@ -447,14 +476,17 @@ def act_dryrun(env, folder, *extra):
 
 
 def act_window(env, folder, *extra):
-    return run_in("ppk", env, "estpos-window", cpath(folder), *extra).returncode
+    rc = run_in("ppk", env, "estpos-window", cpath(folder), *extra).returncode
+    return no_times_skipped(folder) if rc == NO_TIMES else rc
 
 
 def act_process(env, folder, *extra):
-    return run_in("ppk", env, "process", cpath(folder), *extra).returncode
+    rc = run_in("ppk", env, "process", cpath(folder), *extra).returncode
+    return no_times_skipped(folder) if rc == NO_TIMES else rc
 
 
 PORTAL_DOWN = 4  # exit code of estpos-order / estpos-download when the ESTPOS backend is unavailable
+NO_TIMES = 5  # exit code of estpos-order / estpos-window / process: the MRK has no exposure times (nothing done)
 
 
 def host_folder(env: dict[str, str], folder: str) -> Path:
@@ -550,6 +582,8 @@ def act_run(env: dict[str, str], folder: str) -> int:
         rc = run_in("ppk-estpos", env, "estpos-order", cpath(folder)).returncode
         if rc == PORTAL_DOWN:
             return PORTAL_DOWN
+        if rc == NO_TIMES:
+            return no_times_skipped(folder)
         if rc == 3:
             print(c(f"○ {folder}: the order is placed but not ready yet; run again later to download and process it", "yellow"))
             return 3
@@ -559,10 +593,18 @@ def act_run(env: dict[str, str], folder: str) -> int:
     else:
         print(c("ESTPOS credentials not set in .env: skipping the order step, using whatever base file is in the folder", "yellow"))
     print(c(f"== {folder}: processing", "bold"))
-    if run_in("ppk", env, "process", cpath(folder)).returncode != 0:
+    rc = run_in("ppk", env, "process", cpath(folder)).returncode
+    if rc == NO_TIMES:
+        return no_times_skipped(folder)
+    if rc != 0:
         print(c(f"✘ processing failed for {folder}", "red", "bold"), file=sys.stderr)
         return 1
     print(c(f"✔ {folder} finished", "green", "bold"))
+    return 0
+
+
+def no_times_skipped(folder: str) -> int:
+    print(c(f"○ {folder}: skipped, the MRK has no exposure times (cannot be post-processed, nothing ordered)", "yellow"))
     return 0
 
 
@@ -635,11 +677,11 @@ def menu_text(env: dict[str, str]) -> None:
         print(legend())
         print()
         for i, r in enumerate(rows):
-            mark = c("x", "green") if ticked[i] else " "
+            mark = c("x", "green") if ticked[i] else " " if selectable(r) else c("-", "dim")
             print(f"  {i + 1:2d}) [{mark}] {r['folder']}  " + c(f"(next: {r['next']})", "dim"))
         print()
         print(c("Tick:", "bold") + " numbers toggle (" + c("1 3", "bold") + " or " + c("2-4", "bold") + "), "
-              + c("a", "bold") + " = all pending, " + c("A", "bold") + " = all, " + c("n", "bold") + " = none")
+              + c("a", "bold") + " = all pending, " + c("A", "bold") + " = all (that can be processed), " + c("n", "bold") + " = none")
         print(c("Then:", "bold") + " " + c("r", "bold") + " = run ticked (order base if needed + process)   "
               + c("d", "bold") + " = download base only   " + c("o", "bold") + " = order base only   " + c("p", "bold") + " = process only")
         print("      " + c("w", "bold") + " = show order parameters   " + c("s", "bold") + " = rescan   "
@@ -659,7 +701,7 @@ def menu_text(env: dict[str, str]) -> None:
         elif text == "a":
             ticked = [r["next"] in PENDING for r in rows]
         elif text == "A":
-            ticked = [True] * len(rows)
+            ticked = [selectable(r) for r in rows]
         elif text in ("n", "N"):
             ticked = [False] * len(rows)
         elif text in ("r", "d", "o", "p", "w"):
@@ -682,8 +724,8 @@ def menu_text(env: dict[str, str]) -> None:
             if toggles is None:
                 print(c(f"unknown input {text!r}", "yellow"))
                 continue
-            for i in toggles:
-                ticked[i] = not ticked[i]
+            for f in toggle(rows, ticked, toggles):
+                print(c(f"{f}: MRK has no exposure times, it cannot be processed (not ticked)", "yellow"))
 
 
 # ----------------------------------------------------------------------------- menu (pure python, ANSI)
@@ -699,6 +741,8 @@ def default_tick(row: dict) -> bool:
 def why_not(row: dict) -> str:
     if row["next"] == "expired":
         return "older than 90 days, no RINEX available"
+    if row["next"] == "no-times":
+        return "MRK has no exposure times"
     if row["next"] == "done":
         return "done"
     if row["next"] == "photos":
@@ -747,15 +791,15 @@ def _table_lines(rows: list[dict], ticked: list[bool], cursor: int, width: int) 
     head = ["", "folder", "sessions/photos", "flown", "base", "status", "accuracy flown→PPK"]
     data = []
     for r, t in zip(rows, ticked):
-        status = r["result"] if r["next"] in ("done", "reprocess", "photos") else {"order": "needs RINEX + processing", "process": "needs processing",
+        status = r["result"] if r["next"] in ("done", "reprocess", "photos", "no-times") else {"order": "needs RINEX + processing", "process": "needs processing",
                                                                          "photos": "waiting for photos", "expired": "expired",
                                                                          "survey": "base point: needs RINEX + static survey"}.get(r["next"], r["next"])
         if r["next"] == "reprocess":
             status = "needs reprocessing (inputs changed)"
         reason = why_not(r)
-        if reason and not t and reason != "done":
+        if reason and not t and reason != "done" and selectable(r):  # unselectable: the status already says why
             status += f"  [skipped: {reason}]"
-        data.append(["[x]" if t else "[ ]", r["folder"], count_text(r), r["flown"], r["base"], status,
+        data.append(["[x]" if t else "[ ]" if selectable(r) else "[-]", r["folder"], count_text(r), r["flown"], r["base"], status,
                      r.get("accuracy") or ""])
     widths = [max(len(str(x[i])) for x in [head] + data) for i in range(len(head))]
     widths[4] = min(widths[4], 28)  # base names are short; explanations get cut, they repeat in the status column
@@ -777,6 +821,9 @@ def _table_lines(rows: list[dict], ticked: list[bool], cursor: int, width: int) 
         plain = "  ".join(cs)
         if i == cursor:
             lines.append(c("› ", "bold", "cyan") + (("\033[7m" + plain + "\033[0m") if COLOR else plain))
+            continue
+        if r["next"] in UNPROCESSABLE and row[0] != "[x]":
+            lines.append("  " + c(plain, "dim"))
             continue
         if row[0] == "[x]":
             cs[0] = "[" + c("x", "green", "bold") + "]"
@@ -854,7 +901,8 @@ def menu(env: dict[str, str]) -> None:
         elif k == "DOWN":
             cursor = (cursor + 1) % len(rows)
         elif k == "SPACE":
-            ticked[cursor] = not ticked[cursor]
+            if toggle(rows, ticked, [cursor]):
+                msg = f"{rows[cursor]['folder']}: MRK has no exposure times, it cannot be processed"
         elif k == "ENTER":
             folders = [r["folder"] for r, t in zip(rows, ticked) if t]
             if not folders:

@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .discover import Flight, find_flights, group_by_folder
-from .mrk import parse_mrk
+from .mrk import has_exposure_times, parse_mrk
 from .outputs import RESULTS_DIR, find_summary, results_dir
 from .estpos import rinex_days_left, RINEX_RETENTION_DAYS
 from .rinex import read_header, scan_obs_span, has_nav_files
@@ -16,6 +16,7 @@ from .timeutil import span_local
 from .watch import resolve_base
 
 NEXT_ORDER, NEXT_PHOTOS, NEXT_PROCESS, NEXT_REPROCESS, NEXT_DONE, NEXT_EXPIRED = "order", "photos", "process", "reprocess", "done", "expired"
+NEXT_NO_TIMES = "no-times"  # the MRK has no exposure times: PPK is impossible, ordering RINEX would be wasted
 NEXT_SURVEY = "survey"  # a D-RTK 3 base point: convert the log, order the Virtual RINEX, static survey
 RETENTION_WARN_DAYS = 14
 
@@ -122,8 +123,24 @@ def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None,
         nxt = NEXT_ORDER
         if days_left is not None and days_left < 0:
             nxt = NEXT_EXPIRED  # the reason is in the next column; keep the base column short
+    untimed = untimed_mrk(flights)
+    if untimed:
+        result = f"MRK has no exposure times ({untimed}): PPK impossible, use the on-board RTK positions"
+        nxt = NEXT_NO_TIMES
     accuracy = accuracy_text(summary_path) if summary_path.exists() else ""
     return FolderStatus(directory.name, str(directory), len(flights), photos, flown, base, base_ok, result, nxt, days_left, accuracy)
+
+
+def untimed_mrk(flights: list[Flight]) -> str:
+    """'DJI wrote week -522' for the first session whose MRK has no exposure times, else ''."""
+    for f in flights:
+        try:
+            events = parse_mrk(f.mrk)
+        except Exception:  # noqa: BLE001
+            continue
+        if not has_exposure_times(events):
+            return f"DJI wrote week {events[0].week}" + ("" if len(flights) == 1 else f" in {f.mrk.name}")
+    return ""
 
 
 def _cm(mm: float | None) -> str:

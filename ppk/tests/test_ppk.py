@@ -284,6 +284,36 @@ def test_tee_log(tmp_path, monkeypatch, capsys):
     assert sys.stdout is stdout and "\x1b[32mhi" in capsys.readouterr().out  # the terminal keeps its colors
 
 
+def _untimed_mrk(text: str) -> str:
+    """The fixture MRK as DJI writes it without exposure times: TOW -259200 in week [-522], lever arm 0/0/0."""
+    import re
+    return re.sub(r"^(\d+)\t[\d.]+\t\[\d+\]", r"\1\t-259200.000000\t[-522]", text, flags=re.M)
+
+
+def test_mrk_without_exposure_times(tmp_path):
+    import shutil
+    from ppk.mrk import has_exposure_times
+    from ppk.discover import load_flights
+    from ppk.status import folder_status
+    from ppk.cli import process_flight
+    assert has_exposure_times(parse_mrk(FIX / "sample.MRK"))
+    d = tmp_path / "DJI_untimed"; d.mkdir()
+    shutil.copy(FIX / "sample.obs", d / "DJI_a.OBS"); (d / "DJI_a.NAV").write_text("")
+    (d / "DJI_a.MRK").write_text(_untimed_mrk((FIX / "sample.MRK").read_text()))
+    assert not has_exposure_times(parse_mrk(d / "DJI_a.MRK"))
+    for i in (1, 3, 4, 5, 6):  # name times far from anything the MRK could say
+        (d / f"DJI_20260808155508_{i:04d}_V.JPG").write_bytes(b"")
+    flights = load_flights(d)
+    assert len(flights[0].images) == 5  # counted, not dropped by a 1989 session window
+    st = folder_status(d, flights, None)
+    assert st.photos == 5 and st.next == "no-times" and "no exposure times (DJI wrote week -522)" in st.result
+    with pytest.raises(RuntimeError, match="no exposure times"):
+        process_flight(flights[0], d / "base.26o", d)
+    from ppk.cli import main, NO_TIMES
+    for cmd in ("estpos-order", "estpos-window", "process"):  # refused before Playwright or the portal is touched
+        assert main([cmd, str(d)]) == NO_TIMES
+
+
 def test_local_time_helpers(monkeypatch):
     from ppk.timeutil import gpst_to_local, span_local
     monkeypatch.setenv("PPK_TZ", "Europe/Tallinn")

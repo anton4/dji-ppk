@@ -106,11 +106,11 @@ def find_flights(root: str | Path, recursive: bool = True, max_depth: int | None
 def session_window(mrk_path: Path) -> tuple[datetime, datetime] | None:
     """Local time span of the camera events in a .MRK, for picking this session's photos."""
     try:
-        from .mrk import parse_mrk
+        from .mrk import has_exposure_times, parse_mrk
         from .timeutil import gpst_to_local
         events = parse_mrk(mrk_path)
-        if not events:
-            return None
+        if not events or not has_exposure_times(events):
+            return None  # no usable times: count every photo of the folder
         first = gpst_to_local(events[0].time).replace(tzinfo=None)
         last = gpst_to_local(events[-1].time).replace(tzinfo=None)
         return first, last
