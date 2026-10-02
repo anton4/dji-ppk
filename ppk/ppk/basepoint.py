@@ -501,8 +501,9 @@ def flight_crosschecks(root: Path, first: datetime, last: datetime, correction_m
     for directory, flights in sorted(groups.items()):
         if exclude and directory.resolve() == exclude.resolve():
             continue
-        summary = directory / "summary.json"
-        if not summary.exists():
+        from .outputs import find_summary
+        summary = find_summary(directory)
+        if summary is None:
             continue
         try:
             overlaps = False

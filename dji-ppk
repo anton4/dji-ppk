@@ -3,7 +3,7 @@
 
   ./dji-ppk                     interactive table: ↑↓ move, Space tick/untick, Enter = START (order RINEX + process all ticked)
   ./dji-ppk status              one line per flight folder: sessions, photos, base, result, next step (--json)
-  ./dji-ppk run <folder>...     order the Virtual RINEX if needed, then process (geo.txt & co in the folder);
+  ./dji-ppk run <folder>...     order the Virtual RINEX if needed, then process (geo.txt in the folder, reports in ppk/);
                                 the default: ./dji-ppk <folder> does the same
   ./dji-ppk run --all           the same for every folder whose next step is order / process / reprocess
   ./dji-ppk order <folder>      order + download the base only         ./dji-ppk download <folder>  download an existing order (never orders)

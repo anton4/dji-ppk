@@ -240,6 +240,31 @@ def test_in_short_table():
     assert rtk["horizontal_error"]["rms_mm"] >= rtk["horizontal_error"]["p95_mm"] * 0 and rtk["vertical_error"]["max_mm"] >= 0
     text = format_in_short(rtk, solution_quality(matched, len(mrk), read_pos(FIX / "sample.pos").rows))
     assert "DJI on-board RTK (as flown)" in text and "after PPK with the RINEX base" in text and "cm" in text
+    assert "of which a constant shift" in text and "and scatter around it" in text
+    assert max(len(line) for line in text.splitlines()) <= 100
+    real = {"north": {"mean_mm": -303.2}, "up": {"mean_mm": -154.0, "std_mm": 13.9},
+            "horizontal_error": {"rms_mm": 403.4, "max_mm": 443.2}, "vertical_error": {"rms_mm": 154.6, "max_mm": 222.5},
+            "offset_horizontal_mm": 366.0, "scatter_horizontal_mm": 169.5}
+    text = format_in_short(real, {"std_mm": {"horizontal": {"median": 3.9}, "up": {"median": 5.9}}})
+    shift = next(line for line in text.splitlines() if "constant shift" in line)
+    scatter = next(line for line in text.splitlines() if "scatter around" in line)
+    assert "37 cm" in shift and "-15 cm" in shift and "17 cm" in scatter and "1.4 cm" in scatter
+
+
+def test_results_layout_and_legacy_cleanup(tmp_path):
+    from ppk.outputs import find_summary, remove_legacy_outputs, results_dir
+    d = tmp_path / "DJI_f"; d.mkdir()
+    assert find_summary(d) is None
+    keep = ("geo.txt", "DJI_a.OBS", "DJI_a_events.pos", "notes.txt")  # geo.txt, inputs, an Emlid reference, user files stay
+    old = ("summary.json", "accuracy.txt", "events.csv", "DJI_a_geo.txt", "DJI_a_accuracy.txt", "DJI_a_trajectory.pos",
+           "DJI_a_trajectory_events.pos", "DONE")
+    for n in keep + old:
+        (d / n).write_text("x")
+    assert find_summary(d) == d / "summary.json"
+    assert sorted(remove_legacy_outputs(d, ["DJI_a"])) == sorted(old)
+    assert sorted(p.name for p in d.iterdir()) == sorted(keep)
+    results_dir(d).mkdir(); (results_dir(d) / "summary.json").write_text("{}")
+    assert find_summary(d) == d / "ppk" / "summary.json"
 
 
 def test_local_time_helpers(monkeypatch):
@@ -396,15 +421,20 @@ def test_folder_status_next_step(tmp_path):
     assert st.base == "base.26o" and st.next == "process"
     (d / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 5, "events": {"fix": 5, "mrk": 5}}))
     st = folder_status(d, flights, None)
+    assert st.next == "reprocess" and "old layout" in st.result  # accuracy.txt next to the photos breaks WebODM
+    (d / "summary.json").unlink()
+    (d / "ppk").mkdir()
+    (d / "ppk" / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 5, "events": {"fix": 5, "mrk": 5}}))
+    st = folder_status(d, flights, None)
     assert st.next == "done" and "5 rows" in st.result
     time.sleep(0.01); os.utime(d / "DJI_a.MRK", None)  # input newer than the result
     st = folder_status(d, flights, None)
     assert st.next == "reprocess" and "outdated" in st.result
-    (d / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 3, "events": {"fix": 5, "mrk": 5}}))
+    (d / "ppk" / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 3, "events": {"fix": 5, "mrk": 5}}))
     st = folder_status(d, flights, None)
     assert st.next == "reprocess" and "photos arrived" in st.result  # processed with 3 photos, 5 are here now
     (d / "DJI_20260912100505_0006_V.JPG").unlink()
-    (d / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 4, "events": {"fix": 5, "mrk": 5}}))
+    (d / "ppk" / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 4, "events": {"fix": 5, "mrk": 5}}))
     st = folder_status(d, load_flights(d), None)
     assert st.next == "photos" and "1 of 5 photos not in the folder yet" in st.result
     assert "DJI_x" in format_status([st])
@@ -514,7 +544,7 @@ def test_status_reports_float_photos(tmp_path):
         (d / f"DJI_20260912100505_{i:04d}_V.JPG").write_bytes(b"")
     (d / "base.26o").write_text((FIX / "base_header.26o").read_text() + "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 08 29 59.0000000  0  1\n")
     (d / "base.26n").write_text("")
-    (d / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 5, "events": {"fix": 3, "mrk": 5, "float": 2, "other": 0, "unsolved": 0}}))
+    (d / "ppk").mkdir(); (d / "ppk" / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 5, "events": {"fix": 3, "mrk": 5, "float": 2, "other": 0, "unsolved": 0}}))
     st = folder_status(d, load_flights(d), None)
     assert st.next == "done" and "3/5 fixed, 2 float (not cm-accurate)" in st.result
 
@@ -790,7 +820,7 @@ def test_flight_crosschecks(tmp_path):
     from ppk.basepoint import flight_crosschecks
     f = tmp_path / "DJI_flight"; f.mkdir()
     shutil.copy(FIX / "sample.obs", f / "DJI_a.OBS"); shutil.copy(FIX / "sample.MRK", f / "DJI_a.MRK"); (f / "DJI_a.NAV").write_text("")
-    (f / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "rtk_vs_ppk": {
+    (f / "ppk").mkdir(); (f / "ppk" / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "rtk_vs_ppk": {
         "north": {"mean_mm": 410.0}, "east": {"mean_mm": -5.0}, "up": {"mean_mm": -280.0}}}))
     corr = {"north": 412.0, "east": -10.0, "up": -300.0}
     cc = flight_crosschecks(tmp_path, datetime(2026, 9, 12, 6, 30), datetime(2026, 9, 12, 8, 30), corr)

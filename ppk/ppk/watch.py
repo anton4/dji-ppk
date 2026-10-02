@@ -83,6 +83,7 @@ def _already_done(directory: Path, group: list[Flight], base_dir: Path | None) -
 def watch(flights_dir: Path, base_dir: Path | None, out_dir: Path, process_fn, poll_seconds: int = 30,
           once: bool = False, settle_seconds: int = 120, in_place: bool = False) -> None:
     from .cli import _out_dir_for  # local import to avoid a cycle
+    from .outputs import results_dir
     seen: dict[str, tuple] = {}
     log.info("watching %s (base dir %s, output %s, poll %ss)", flights_dir, base_dir,
              "in the flight folders" if in_place else out_dir, poll_seconds)
@@ -100,7 +101,7 @@ def watch(flights_dir: Path, base_dir: Path | None, out_dir: Path, process_fn, p
             except OSError:
                 continue
             target = _out_dir_for(out_dir, fl, in_place)
-            done, failed = target / "DONE", target / "FAILED.log"
+            done, failed = results_dir(target) / "DONE", results_dir(target) / "FAILED.log"
             if done.exists() and seen.get(key, sig) == sig:
                 continue
             if in_place and seen.get(key) is None and _already_done(directory, group, base_dir):
@@ -128,7 +129,7 @@ def watch(flights_dir: Path, base_dir: Path | None, out_dir: Path, process_fn, p
                     failed.unlink()
                 log.info("%s: done", fl.name)
             except Exception:  # noqa: BLE001
-                target.mkdir(parents=True, exist_ok=True)
+                failed.parent.mkdir(parents=True, exist_ok=True)
                 failed.write_text(traceback.format_exc())
                 log.error("%s: FAILED, see %s", fl.name, failed)
         if once:

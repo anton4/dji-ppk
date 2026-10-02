@@ -84,16 +84,20 @@ underlying `ppk` command (see below). Without a terminal (pipes, Windows) the me
 3. **PPK.** For each session the rover `.OBS` is copied with one RINEX event record per exposure, `rnx2rtkp` runs with
    the base observations, the base navigation files and the rover NAV, and the event solutions are matched back to the
    MRK rows (±1.5 ms) with the DJI lever arm applied (camera = antenna + N, + E, height − V, as Emlid Studio does).
-4. **Outputs**, merged over all sessions, written into the flight folder:
+4. **Outputs**, merged over all sessions: `geo.txt` next to the photos, everything else in the `ppk/` subfolder of the
+   flight folder. WebODM (NodeODM) takes every uploaded `.txt` other than `geo.txt` and `image_groups.txt` for a GCP
+   file, so the photos and `geo.txt` can be selected and uploaded together without picking anything out. Folders
+   processed by an older version, with the reports next to the photos, show as `reprocess` in the status; processing
+   them again removes those old copies.
 
 | file | content |
 |---|---|
-| `geo.txt` | WebODM/ODM geo file: `EPSG:4326`, then `<image> <lon> <lat> <ellipsoidal height>` per photo (camera position) |
+| `geo.txt` | (in the flight folder) WebODM/ODM geo file: `EPSG:4326`, then `<image> <lon> <lat> <ellipsoidal height>` per photo (camera position) |
 | `events.csv` | per photo: image, GPST, camera lat/lon/h, Q, satellites, std, ratio, antenna lat/lon/h, MRK offsets, DJI RTK position |
 | `summary.json` | counts, fix ratios, inputs, versions, RTKLIB standard deviations, on-board RTK vs PPK statistics, per-session summaries |
 | `accuracy.txt` | the short table printed at the end of a run: typical and worst photo error as flown and after PPK, horizontal and vertical |
 | `<session>_trajectory.pos`, `<session>_trajectory_events.pos` | RTKLIB antenna trajectory (5 Hz) and the solutions at the exposure times |
-| `<session>_*` | per-session `events.csv`, `geo.txt`, `summary.json`, `accuracy.txt`, `rtklib.log`, `rtklib_used.conf` |
+| `<session>_*` | several sessions only: per-session `events.csv`, `geo.txt`, `summary.json`, `accuracy.txt`, `rtklib.log`, `rtklib_used.conf` |
 | `compare_report.txt` | only when an Emlid Studio `*_events.pos` is in the folder: photo-by-photo comparison |
 
 Coordinate frame: all positions are in EUREF-EST97 (Estonia's ETRS89, the frame of L-EST97 and the cadastre), inherited
@@ -282,7 +286,7 @@ logger against a Virtual RINEX, but is not implemented here.
   the synthesized observations and the file header move together.
 - Base files may be `.??o`, RINEX 3 long names (`.rnx`), Hatanaka (`.crx`, `.??d`), `.gz`, `.Z` or `.zip`.
 - The `.trace` files that Emlid Studio leaves in flight folders can be gigabytes; nothing in the flight folder is copied
-  except the `.OBS` (with events) into a temporary `work/` directory. Emlid `*_events.pos` files are used as comparison
+  except the `.OBS` (with events) into a temporary `ppk/work/` directory. Emlid `*_events.pos` files are used as comparison
   references; the tool's own `*_trajectory_events.pos` never is.
 - Logs are colored on a terminal (the launcher passes `PPK_COLOR=1`; `NO_COLOR=1` disables it). Files on disk stay plain.
 

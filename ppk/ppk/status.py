@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .discover import Flight, find_flights, group_by_folder
 from .mrk import parse_mrk
+from .outputs import RESULTS_DIR, find_summary, results_dir
 from .estpos import rinex_days_left, RINEX_RETENTION_DAYS
 from .rinex import read_header, scan_obs_span, has_nav_files
 from .timeutil import span_local
@@ -85,7 +86,7 @@ def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None,
 
     inputs = [p for f in flights for p in (f.obs, f.nav, f.mrk)] + [b for b in bases if b]
     newest_input = max(p.stat().st_mtime for p in inputs)
-    summary_path = directory / "summary.json"
+    summary_path = find_summary(directory) or results_dir(directory) / "summary.json"
     result, nxt = "not processed", NEXT_PROCESS
     if summary_path.exists():
         try:
@@ -107,6 +108,9 @@ def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None,
                 nxt = NEXT_REPROCESS
             else:
                 nxt = NEXT_DONE
+            if summary_path.parent == directory:  # old layout: accuracy.txt & co next to the photos break WebODM
+                result += f" (old layout: reports not in {RESULTS_DIR}/)"
+                nxt = NEXT_REPROCESS
         except (OSError, ValueError):
             result, nxt = "summary.json unreadable", NEXT_REPROCESS
     if photos < expected:
