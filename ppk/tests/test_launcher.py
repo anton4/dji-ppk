@@ -66,3 +66,22 @@ def test_unprocessable_folders_cannot_be_ticked(launcher):
     assert launcher.toggle(rows, ticked, [0, 1]) == ["bad"] and ticked == [True, False]
     lines = launcher._table_lines(rows, ticked, -1, 200)
     assert "[-]  bad" in lines[2] and "skipped" not in lines[2] and "[x]" in lines[1]
+
+
+def test_unticked_folders_are_remembered(launcher, tmp_path, monkeypatch):
+    monkeypatch.setattr(launcher, "EXCLUDED_FILE", tmp_path / "excluded.json")
+    monkeypatch.setattr(launcher, "_EXCLUDED", None)
+    rows = [{"folder": f, "next": "order", "sessions": 1, "photos": 50} for f in ("a", "b")]
+    rows.append({"folder": "done", "next": "done", "sessions": 1, "photos": 50})
+    ticked = launcher.initial_ticks(rows)
+    assert ticked == [True, True, False]
+    launcher.toggle(rows, ticked, [1, 2])  # untick b, tick a done folder (a one-off: not remembered)
+    launcher.remember(rows, ticked)
+    monkeypatch.setattr(launcher, "_EXCLUDED", None)  # a new session reads the file again
+    assert launcher.initial_ticks(rows) == [True, False, False]
+    assert launcher.why_not(rows[1]) == "unticked by you (remembered)"
+    ticked = launcher.initial_ticks(rows)
+    launcher.toggle(rows, ticked, [1])
+    launcher.remember(rows, ticked)
+    monkeypatch.setattr(launcher, "_EXCLUDED", None)
+    assert launcher.initial_ticks(rows) == [True, True, False]  # ticked again: forgotten

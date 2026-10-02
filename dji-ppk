@@ -610,9 +610,13 @@ def no_times_skipped(folder: str) -> int:
 
 def act_run_all(env: dict[str, str], rows: list[dict] | None = None) -> int:
     rows = rows or status_rows(env)
-    pending = [r["folder"] for r in rows if default_tick(r)]
+    pending = [r["folder"] for r, t in zip(rows, initial_ticks(rows)) if t]
+    left_out = [r["folder"] for r in rows if default_tick(r) and r["folder"] in excluded()]
+    if left_out:
+        print(c(f"left out (unticked by you in the menu): {', '.join(left_out)}", "dim"))
     if not pending:
-        print(c(f"nothing to do: every folder is done, waiting for photos, expired, or has fewer than {MIN_PHOTOS} photos", "green"))
+        print(c(f"nothing to do: every folder is done, waiting for photos, expired, unticked by you, "
+                f"or has fewer than {MIN_PHOTOS} photos", "green"))
         return 0
     rc = 0
     for i, f in enumerate(pending):
@@ -661,12 +665,12 @@ def parse_toggles(text: str, n: int) -> list[int] | None:
 
 def menu_text(env: dict[str, str]) -> None:
     rows = status_rows(env)
-    ticked = [default_tick(r) for r in rows]
+    ticked = initial_ticks(rows)
 
     def rescan():
         nonlocal rows, ticked
         rows = status_rows(env)
-        ticked = [default_tick(r) for r in rows]
+        ticked = initial_ticks(rows)
 
     while True:
         if not rows:
@@ -700,10 +704,13 @@ def menu_text(env: dict[str, str]) -> None:
             rescan()
         elif text == "a":
             ticked = [r["next"] in PENDING for r in rows]
+            remember(rows, ticked)
         elif text == "A":
             ticked = [selectable(r) for r in rows]
+            remember(rows, ticked)
         elif text in ("n", "N"):
             ticked = [False] * len(rows)
+            remember(rows, ticked)
         elif text in ("r", "d", "o", "p", "w"):
             picked = [r["folder"] for r, t in zip(rows, ticked) if t]
             if not picked:
@@ -726,6 +733,7 @@ def menu_text(env: dict[str, str]) -> None:
                 continue
             for f in toggle(rows, ticked, toggles):
                 print(c(f"{f}: MRK has no exposure times, it cannot be processed (not ticked)", "yellow"))
+            remember(rows, ticked)
 
 
 # ----------------------------------------------------------------------------- menu (pure python, ANSI)
@@ -738,7 +746,44 @@ def default_tick(row: dict) -> bool:
     return row["next"] in PENDING and (row["photos"] >= MIN_PHOTOS or is_basepoint(row))
 
 
+EXCLUDED_FILE = ROOT / ".excluded-folders.json"  # folders the user unticked although they were pending
+_EXCLUDED: set[str] | None = None
+
+
+def excluded() -> set[str]:
+    """Folders unticked by hand: they stay unticked in later sessions and `run --all` leaves them out."""
+    global _EXCLUDED
+    if _EXCLUDED is None:
+        try:
+            _EXCLUDED = set(json.loads(EXCLUDED_FILE.read_text()))
+        except (OSError, ValueError, TypeError):
+            _EXCLUDED = set()
+    return _EXCLUDED
+
+
+def initial_ticks(rows: list[dict]) -> list[bool]:
+    return [default_tick(r) and r["folder"] not in excluded() for r in rows]
+
+
+def remember(rows: list[dict], ticked: list[bool]) -> None:
+    """Save the selection: a pending folder left unticked is remembered, ticking it again forgets it."""
+    ex = excluded()
+    before = set(ex)
+    for r, t in zip(rows, ticked):
+        if t:
+            ex.discard(r["folder"])
+        elif default_tick(r):
+            ex.add(r["folder"])
+    if ex != before:
+        try:
+            EXCLUDED_FILE.write_text(json.dumps(sorted(ex), indent=1) + "\n")
+        except OSError as exc:
+            print(c(f"cannot save the selection: {exc}", "yellow"), file=sys.stderr)
+
+
 def why_not(row: dict) -> str:
+    if row["folder"] in excluded() and default_tick(row):
+        return "unticked by you (remembered)"
     if row["next"] == "expired":
         return "older than 90 days, no RINEX available"
     if row["next"] == "no-times":
@@ -876,13 +921,13 @@ def menu(env: dict[str, str]) -> None:
     except ImportError:
         return menu_text(env)
     rows = status_rows(env)
-    ticked = [default_tick(r) for r in rows]
+    ticked = initial_ticks(rows)
     cursor, msg = 0, ""
 
     def rescan():
         nonlocal rows, ticked, cursor
         rows = status_rows(env)
-        ticked = [default_tick(r) for r in rows]
+        ticked = initial_ticks(rows)
         cursor = min(cursor, max(0, len(rows) - 1))
 
     while True:
@@ -903,6 +948,7 @@ def menu(env: dict[str, str]) -> None:
         elif k == "SPACE":
             if toggle(rows, ticked, [cursor]):
                 msg = f"{rows[cursor]['folder']}: MRK has no exposure times, it cannot be processed"
+            remember(rows, ticked)
         elif k == "ENTER":
             folders = [r["folder"] for r, t in zip(rows, ticked) if t]
             if not folders:

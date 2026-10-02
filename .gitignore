@@ -6,8 +6,9 @@ DJI_*/
 data/
 *.trace
 
-# launcher upgrade check cache
+# launcher upgrade check cache and remembered menu selection
 .version-check.json
+.excluded-folders.json
 
 # python / editor
 __pycache__/
