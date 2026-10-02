@@ -406,8 +406,13 @@ def toggle(rows: list[dict], ticked: list[bool], indexes: list[int]) -> list[str
 
 
 def sort_rows(rows: list[dict]) -> list[dict]:
-    """Keep the scan order, but move the folders that can never be processed to the end."""
-    return sorted(rows, key=lambda r: r.get("next") in UNPROCESSABLE)
+    """Newest flight first (the menu cursor starts on it); folders that can never be processed, and folders without a
+    readable flight time, go to the end. `flown` starts with the local 'YYYY-MM-DD HH:MM', so it sorts as text."""
+    def flown(r: dict) -> str:
+        f = str(r.get("flown") or "")
+        return f[:16] if re.match(r"\d{4}-\d\d-\d\d \d\d:\d\d", f) else ""
+    newest_first = sorted(rows, key=flown, reverse=True)
+    return sorted(newest_first, key=lambda r: (r.get("next") in UNPROCESSABLE, not flown(r)))  # stable: keeps the order
 
 
 def render_table(rows: list[dict]) -> str:

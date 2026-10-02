@@ -43,6 +43,8 @@ base file it has, its status, and the accuracy before and after PPK once process
 Pre-ticked: every folder that needs RINEX or processing, except flights older than ESTPOS's 90-day RINEX retention
 (no base can be ordered any more) and folders with fewer than 10 photos. Skipped folders say why in the status column.
 
+The table lists the newest flight first, and the cursor starts on it; folders that cannot be processed come last.
+
 The selection is remembered: a pre-ticked folder you untick stays unticked the next time (`[skipped: unticked by you
 (remembered)]`), and `./dji-ppk run --all` leaves it out too, until you tick it again. The list is kept in
 `.excluded-folders.json` next to the launcher (gitignored). The watcher does not use it.
