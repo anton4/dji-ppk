@@ -96,6 +96,13 @@ underlying `ppk` command (see below). Without a terminal (pipes, Windows) the me
 | `<session>_*` | per-session `events.csv`, `geo.txt`, `summary.json`, `accuracy.txt`, `rtklib.log`, `rtklib_used.conf` |
 | `compare_report.txt` | only when an Emlid Studio `*_events.pos` is in the folder: photo-by-photo comparison |
 
+Coordinate frame: all positions are in EUREF-EST97 (Estonia's ETRS89, the frame of L-EST97 and the cadastre), inherited
+from the ESTPOS base, with GRS80 ellipsoidal heights. `geo.txt` still says `EPSG:4326` on purpose: ODM/PROJ applies no
+datum shift between the two, so the model's "WGS84 UTM 35N" is numerically ETRS89 / UTM 35N (EPSG:25835) and lines up
+with the cadastre at the centimetre level. Against WGS84/ITRF imagery (Google, Esri) it sits 0.5–0.9 m off (growing
+~2.5 cm a year); that is expected, not an error. EH2000 heights need the EST-GEOID2017 separation (about 17–25 m),
+which is not applied here.
+
 Three reports are printed after each session: the solution quality (fix counts, satellites, RTKLIB's estimated
 standard deviations, ambiguity ratio), the drone's on-board RTK positions from the `.MRK` compared with the PPK result
 (the mean is the position error of the on-board base, for a PPP-surveyed D-RTK 3 usually decimetres; the scatter is
