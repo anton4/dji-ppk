@@ -19,7 +19,7 @@ from .estpos import check_base, format_order, plan_order, plan_orders, plan_base
 from .events import write_obs_with_events
 from .mrk import parse_mrk
 from .offsets import ned_difference
-from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_summary, solution_quality, format_quality, rtk_vs_ppk, format_rtk_vs_ppk, format_in_short
+from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_summary, solution_quality, format_quality, rtk_vs_ppk, format_rtk_vs_ppk, format_in_short, results_dir, remove_legacy_outputs
 from .pos import read_pos
 from .rinex import prepare_obs, read_header, scan_obs_span, find_base_candidates, find_nav_files, stale_nav_systems, has_nav_files
 from .rtklib import rtklib_version, run_rnx2rtkp, write_conf
@@ -75,13 +75,16 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
                    overrides: dict[str, str] | None = None, geo_accuracy: bool = False,
                    fixed_only: bool = False, keep_work: bool = False, extra_nav: list[Path] | None = None,
                    prefix: str = "", matched_out: list | None = None) -> dict:
-    """Process one session. `prefix` (e.g. '<stem>_') names the outputs when a folder holds several sessions;
-    `matched_out`, if given, receives the CameraEvents so the caller can merge sessions into one geo.txt."""
+    """Process one session. geo.txt goes into `out_dir`, everything else into its RESULTS_DIR subfolder.
+    `prefix` (e.g. '<stem>_') names the outputs when a folder holds several sessions (the per-session geo.txt then
+    goes into the subfolder too); `matched_out`, if given, receives the CameraEvents so the caller can merge
+    sessions into one geo.txt."""
     t0 = time.time()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    work = out_dir / "work"
+    res_dir = results_dir(out_dir)
+    res_dir.mkdir(parents=True, exist_ok=True)
+    work = res_dir / "work"
     work.mkdir(exist_ok=True)
-    for stale in (out_dir / "DONE", out_dir / "FAILED.log"):
+    for stale in (res_dir / "DONE", res_dir / "FAILED.log"):
         if stale.exists():
             stale.unlink()
 
@@ -127,11 +130,11 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
 
     if (overrides or {}).get("misc-timeinterp", "off").lower() in ("on", "1"):
         log.warning("misc-timeinterp=on suppresses RTKLIB's *_events.pos output; expect no camera solutions")
-    conf_used = write_conf(conf, out_dir / f"{prefix}rtklib_used.conf", overrides)
-    out_pos = out_dir / f"{flight.stem}_trajectory.pos"
+    conf_used = write_conf(conf, res_dir / f"{prefix}rtklib_used.conf", overrides)
+    out_pos = res_dir / f"{flight.stem}_trajectory.pos"
     navs = [flight.nav] + list(extra_nav or []) + base_navs
     log.info(ui.step(4, 5, "running %s ..."), rtklib_version())
-    res = run_rnx2rtkp(conf_used, out_pos, rover_events, base_plain, navs, out_dir / f"{prefix}rtklib.log")
+    res = run_rnx2rtkp(conf_used, out_pos, rover_events, base_plain, navs, res_dir / f"{prefix}rtklib.log")
     log.info("rnx2rtkp finished in %.1f s (exit %d)", res.seconds, res.returncode)
     if not res.events_path.exists() or not res.pos_path.exists():
         raise RuntimeError(f"rnx2rtkp produced no solution, see {res.log_path}")
@@ -143,9 +146,10 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
         log.warning("%d MRK events have no RTKLIB solution (ids %s ...)", len(unmatched), [e.id for e in unmatched][:5])
 
     log.info(ui.step(5, 5, "writing outputs"))
-    csv_path = out_dir / f"{prefix}events.csv"
+    csv_path = res_dir / f"{prefix}events.csv"
     write_events_csv(csv_path, matched)
-    n_geo = write_geo_txt(out_dir / f"{prefix}geo.txt", matched, with_accuracy=geo_accuracy, fixed_only=fixed_only)
+    geo_path = (res_dir if prefix else out_dir) / f"{prefix}geo.txt"
+    n_geo = write_geo_txt(geo_path, matched, with_accuracy=geo_accuracy, fixed_only=fixed_only)
     if matched_out is not None:
         matched_out.extend(matched)
     summary = {
@@ -158,10 +162,10 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
                    "other": sum(1 for e in matched if e.q not in (1, 2))},
         "geo_txt_rows": n_geo, "images_missing": len(missing_images), "seconds": round(time.time() - t0, 1),
         "base_nav_files": [p.name for p in base_navs], "rover_nav_stale": sorted(stale),
-        "outputs": {"events_csv": csv_path.name, "geo_txt": f"{prefix}geo.txt", "trajectory_pos": res.pos_path.name,
+        "outputs": {"events_csv": csv_path.name, "geo_txt": f"{prefix}geo.txt" if prefix else "../geo.txt", "trajectory_pos": res.pos_path.name,
                     "events_pos": res.events_path.name, "rtklib_log": f"{prefix}rtklib.log", "conf": conf_used.name},
     }
-    write_summary(out_dir / f"{prefix}summary.json", summary)
+    write_summary(res_dir / f"{prefix}summary.json", summary)
     ev = summary["events"]
     fixed_pct = 100 * ev["fix"] / len(mrk) if mrk else 0.0
     verdict = f"{ev['fix']}/{len(mrk)} photos fixed ({ui.pct(fixed_pct)}), trajectory {ui.pct(100 * traj.fix_ratio)} fixed"
@@ -190,16 +194,16 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     summary["rtk_vs_ppk"] = rtk
     print(ui.colorize_report(format_rtk_vs_ppk(rtk)))
     in_short = format_in_short(rtk, quality)
-    (out_dir / f"{prefix}accuracy.txt").write_text(in_short + "\n")
+    (res_dir / f"{prefix}accuracy.txt").write_text(in_short + "\n")
     if refs:
         ref = read_pos(refs[-1])
         cmp_res = compare_events(matched, ref.rows)
         report = format_report(cmp_res, f"ours vs reference {refs[-1].name}")
-        (out_dir / f"{prefix}compare_report.txt").write_text(report + "\n")
+        (res_dir / f"{prefix}compare_report.txt").write_text(report + "\n")
         summary["compare"] = {"reference": refs[-1].name, **cmp_res.as_dict()}
         print(ui.colorize_report(report))
     print(ui.colorize_report(in_short))
-    write_summary(out_dir / f"{prefix}summary.json", summary)
+    write_summary(res_dir / f"{prefix}summary.json", summary)
     if not keep_work:
         shutil.rmtree(work, ignore_errors=True)
     return summary
@@ -245,6 +249,9 @@ def process_sessions(flights: list[Flight], bases: list[Path], out_dir: Path, co
                      keep_work: bool = False, extra_nav: list[Path] | None = None) -> dict:
     """Process every session of a flight day and, with more than one, merge them into one geo.txt / events.csv /
     summary.json / accuracy.txt (per-session files keep the session stem as prefix)."""
+    removed = remove_legacy_outputs(out_dir, [fl.stem for fl in flights])
+    if removed:
+        log.info("moved to %s/: removed the old copies of %s next to the photos", results_dir(out_dir).name, ", ".join(removed))
     if len(flights) == 1:
         return process_flight(flights[0], bases[0], out_dir, conf, overrides, geo_accuracy, fixed_only, keep_work, extra_nav)
     all_matched: list = []
@@ -254,16 +261,17 @@ def process_sessions(flights: list[Flight], bases: list[Path], out_dir: Path, co
         summaries.append(process_flight(fl, base, out_dir, conf, overrides, geo_accuracy, fixed_only, keep_work,
                                         extra_nav, prefix=f"{fl.stem}_", matched_out=all_matched))
     all_matched.sort(key=lambda e: e.time)
-    write_events_csv(out_dir / "events.csv", all_matched)
+    res_dir = results_dir(out_dir)
+    write_events_csv(res_dir / "events.csv", all_matched)
     n_geo = write_geo_txt(out_dir / "geo.txt", all_matched, with_accuracy=geo_accuracy, fixed_only=fixed_only)
     merged = merge_summaries(flights[0].name, summaries, n_geo)
-    write_summary(out_dir / "summary.json", merged)
+    write_summary(res_dir / "summary.json", merged)
     parts = []
     for fl in flights:
-        acc = out_dir / f"{fl.stem}_accuracy.txt"
+        acc = res_dir / f"{fl.stem}_accuracy.txt"
         if acc.exists():
             parts.append(f"### session {fl.stem}\n" + acc.read_text())
-    (out_dir / "accuracy.txt").write_text("\n".join(parts))
+    (res_dir / "accuracy.txt").write_text("\n".join(parts))
     ev = merged["events"]
     log.info("all sessions: %d photos, %d fixed, %d unsolved; geo.txt has %d rows", ev["mrk"], ev["fix"], ev["unsolved"], n_geo)
     return merged
@@ -281,7 +289,7 @@ def merge_summaries(name: str, summaries: list[dict], n_geo: int) -> dict:
         "trajectory_fix_ratio": round(traj_fix / traj_total, 4) if traj_total else 0.0,
         "images_missing": sum(s["images_missing"] for s in summaries),
         "seconds": round(sum(s["seconds"] for s in summaries), 1),
-        "outputs": {"events_csv": "events.csv", "geo_txt": "geo.txt", "per_session": [s["outputs"] for s in summaries]},
+        "outputs": {"events_csv": "events.csv", "geo_txt": "../geo.txt", "per_session": [s["outputs"] for s in summaries]},
     }
 
 
@@ -698,14 +706,15 @@ def cmd_process(a: argparse.Namespace) -> int:
     print(ui.ok(f"{flights[0].name}: {ev['fix']}/{ev['mrk']} photos fixed, geo.txt has {summary['geo_txt_rows']} rows")
           if ev["fix"] == ev["mrk"] else ui.warn(f"{flights[0].name}: {ev['fix']}/{ev['mrk']} photos fixed, {ev['unsolved']} unsolved, "
                                                  f"geo.txt has {summary['geo_txt_rows']} rows"))
-    print(ui.c(f"  in {out_dir}: geo.txt, events.csv, summary.json, accuracy.txt", "dim"))
+    print(ui.c(f"  in {out_dir}: geo.txt; in {results_dir(out_dir)}: events.csv, summary.json, accuracy.txt", "dim"))
     return 0
 
 
 def cmd_compare(a: argparse.Namespace) -> int:
     ours_path = Path(a.ours)
     if ours_path.is_dir():
-        ours_path = ours_path / "events.csv"
+        ours_path = next((p for p in (results_dir(ours_path) / "events.csv", ours_path / "events.csv") if p.exists()),
+                         ours_path / "events.csv")
     ours = read_events_csv(ours_path)
     ref = read_pos(Path(a.reference))
     res = compare_events(ours, ref.rows, use_antenna=a.antenna, fixed_only=a.fixed_only)

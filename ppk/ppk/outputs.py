@@ -16,6 +16,38 @@ from .timeutil import fmt
 
 MATCH_TOLERANCE_S = 0.0015
 
+# Only geo.txt stays next to the photos; every other output goes into this subfolder. WebODM/NodeODM takes any
+# uploaded .txt that is not geo.txt or image_groups.txt for a GCP file, so accuracy.txt & co must not be there.
+RESULTS_DIR = "ppk"
+# Outputs earlier versions wrote next to the photos (with "<session stem>_" in front for several sessions).
+LEGACY_OUTPUTS = ("events.csv", "summary.json", "accuracy.txt", "compare_report.txt", "rtklib.log", "rtklib_used.conf",
+                  "DONE", "FAILED.log")
+LEGACY_SESSION_OUTPUTS = LEGACY_OUTPUTS[:6] + ("geo.txt", "trajectory.pos", "trajectory_events.pos")
+
+
+def results_dir(folder: Path) -> Path:
+    return folder / RESULTS_DIR
+
+
+def find_summary(folder: Path) -> Path | None:
+    """summary.json of a processed folder: in the results subfolder, or next to the photos (old layout)."""
+    for p in (results_dir(folder) / "summary.json", folder / "summary.json"):
+        if p.exists():
+            return p
+    return None
+
+
+def remove_legacy_outputs(folder: Path, stems: list[str]) -> list[str]:
+    """Delete the outputs an earlier version wrote next to the photos (they are rewritten in RESULTS_DIR)."""
+    names = list(LEGACY_OUTPUTS) + [f"{s}_{n}" for s in stems for n in LEGACY_SESSION_OUTPUTS]
+    removed = []
+    for n in names:
+        p = folder / n
+        if p.is_file():
+            p.unlink()
+            removed.append(n)
+    return removed
+
 
 @dataclass
 class CameraEvent:
@@ -270,6 +302,11 @@ def format_in_short(rtk: dict, quality: dict) -> str:
                      f"{'about ' + f'{v['rms_mm'] / 10:.0f} cm':<16}typical error (rms)")
         lines.append(f" {'':34}{'worst ' + f'{h['max_mm'] / 10:.0f} cm':<16}"
                      f"{'worst ' + f'{v['max_mm'] / 10:.0f} cm':<16}worst photo")
+        if "north" in rtk:
+            lines.append(f" {'  of which a constant shift':<34}{f'{rtk['offset_horizontal_mm'] / 10:.0f} cm':<16}"
+                         f"{f'{rtk['up']['mean_mm'] / 10:+.0f} cm':<16}RTK base position error")
+            lines.append(f" {'  and scatter around it':<34}{f'{rtk['scatter_horizontal_mm'] / 10:.0f} cm':<16}"
+                         f"{f'{rtk['up']['std_mm'] / 10:.1f} cm':<16}1 sigma")
     else:
         lines.append(f" {'DJI on-board RTK (as flown)':<34}{'n/a':<16}{'n/a':<16}(no RTK fixed photos in the MRK)")
     if ppk_h is not None and ppk_v is not None:
@@ -278,7 +315,10 @@ def format_in_short(rtk: dict, quality: dict) -> str:
         lines.append(f" {'after PPK with the RINEX base':<34}{'n/a':<16}{'n/a':<16}(no fixed photos)")
     lines += ["-" * 78,
               " 'DJI on-board RTK' is the position the drone wrote into the photos during the flight, measured",
-              " against the PPK result. 'after PPK' is RTKLIB's own estimate and is not verified against ground",
-              " control points; independent checks typically show 1-3 cm.",
+              " against the PPK result (EUREF-EST97). The constant shift is how far the D-RTK 3 base position was",
+              " off; `ppk base-survey` removes it once for a site. The accuracy the D-RTK 3 app shows after PPP",
+              " calibration is the solution's own precision estimate, not this offset. 'after PPK' is likewise",
+              " RTKLIB's own estimate, not verified against ground control points; independent checks typically",
+              " show 1-3 cm.",
               "=" * 78]
     return "\n".join(lines)
