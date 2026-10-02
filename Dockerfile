@@ -5,7 +5,7 @@
 ARG RTKLIB_REF=v2.5.1
 
 # ---------------------------------------------------------------- builder ----
-FROM debian:bookworm-slim AS builder
+FROM debian:trixie-slim AS builder
 ARG RTKLIB_REF
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git cmake build-essential ca-certificates curl \
@@ -41,7 +41,7 @@ RUN mkdir -p /out/antex && curl -fsSL https://files.igs.org/pub/station/general/
     && grep -c 'LEIAR25.R4      LEIT' /out/antex/igs20.atx
 
 # ---------------------------------------------------------------- runtime ----
-FROM python:3.12-slim
+FROM python:3.14-slim
 ARG RTKLIB_REF
 LABEL org.opencontainers.image.title="ppk-processor" \
       org.opencontainers.image.description="DJI PPK processing with RTKLIB-EX ${RTKLIB_REF}"
