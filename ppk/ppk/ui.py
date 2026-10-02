@@ -90,7 +90,7 @@ def colorize_report(text: str) -> str:
 
 
 NEXT_COLORS = {"done": ("green",), "order": ("yellow", "bold"), "photos": ("yellow",), "process": ("cyan", "bold"),
-               "reprocess": ("cyan",), "survey": ("cyan", "bold"), "expired": ("red", "bold")}
+               "reprocess": ("cyan",), "survey": ("cyan", "bold"), "expired": ("red", "bold"), "no-times": ("red",)}
 
 
 def colorize_next(value: str) -> str:

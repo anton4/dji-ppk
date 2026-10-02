@@ -132,6 +132,7 @@ Results are written next to the photos (`PPK_IN_PLACE=1`, the default). `PPK_IN_
 | `reprocess` | an input file, the base or the photo set is newer than the result |
 | `photos` | fewer photos in the folder than camera events in the MRK: the copy is not finished |
 | `expired` | flown more than 90 days ago and no base file in the folder: ESTPOS has no RINEX for it any more |
+| `no-times` | DJI wrote no exposure times into the `.MRK` (e.g. TOW −259200 in week −522 on every row): the photos cannot be placed on the PPK trajectory, so the folder cannot be post-processed and no RINEX is ordered; only the on-board RTK positions in the photos are usable. Listed last and dimmed, shown as `[-]`: it cannot be ticked, and `run`, `order` and `process` skip it |
 | `survey` | a D-RTK 3 base point folder (the station's own `DRTK3_*` logs): order the Virtual RINEX, static survey (see below) |
 | `done` | nothing to do |
 

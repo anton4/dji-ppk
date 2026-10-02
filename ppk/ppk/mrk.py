@@ -51,6 +51,12 @@ class MrkEvent:
         return gps_to_datetime(self.week, self.tow)
 
 
+def has_exposure_times(events: list[MrkEvent]) -> bool:
+    """False when DJI wrote no exposure time (seen: TOW -259200 in week [-522] on every row, lever arm 0/0/0).
+    Such photos cannot be placed on the PPK trajectory; only their on-board RTK positions are usable."""
+    return all(e.week > 0 and e.tow >= 0 for e in events)
+
+
 def parse_mrk(path: str | Path) -> list[MrkEvent]:
     events: list[MrkEvent] = []
     with open(path, "r", errors="replace") as fh:

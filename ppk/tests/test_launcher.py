@@ -50,3 +50,19 @@ def test_latest_versions_uses_the_daily_cache(launcher, tmp_path, monkeypatch):
     (tmp_path / "cache.json").write_text(json.dumps({"checked": time.time() - 25 * 3600, "latest": {}}))
     launcher.latest_versions()
     assert len(calls) == 2
+
+
+def test_unprocessable_folders_sort_last(launcher):
+    rows = [{"folder": "a", "next": "no-times"}, {"folder": "b", "next": "done"}, {"folder": "c", "next": "order"}]
+    assert [r["folder"] for r in launcher.sort_rows(rows)] == ["b", "c", "a"]
+
+
+def test_unprocessable_folders_cannot_be_ticked(launcher):
+    rows = [{"folder": "ok", "next": "order", "sessions": 1, "photos": 50, "flown": "f", "base": "missing", "result": ""},
+            {"folder": "bad", "next": "no-times", "sessions": 1, "photos": 4, "flown": "f", "base": "missing",
+             "result": "MRK has no exposure times (DJI wrote week -522)"}]
+    assert launcher.selectable(rows[0]) and not launcher.selectable(rows[1])
+    ticked = [False, False]
+    assert launcher.toggle(rows, ticked, [0, 1]) == ["bad"] and ticked == [True, False]
+    lines = launcher._table_lines(rows, ticked, -1, 200)
+    assert "[-]  bad" in lines[2] and "skipped" not in lines[2] and "[x]" in lines[1]

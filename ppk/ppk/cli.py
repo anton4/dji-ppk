@@ -17,7 +17,7 @@ from .compare import compare_events, format_report, find_reference_events
 from .discover import Flight, load_flight, load_flights
 from .estpos import check_base, format_order, plan_order, plan_orders, plan_basepoint_orders, rinex_days_left, RINEX_RETENTION_DAYS
 from .events import write_obs_with_events
-from .mrk import parse_mrk
+from .mrk import has_exposure_times, parse_mrk
 from .offsets import ned_difference
 from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_summary, solution_quality, format_quality, rtk_vs_ppk, format_rtk_vs_ppk, format_in_short, results_dir, remove_legacy_outputs
 from .pos import read_pos
@@ -90,6 +90,10 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
             stale.unlink()
 
     mrk = parse_mrk(flight.mrk)
+    if not has_exposure_times(mrk):
+        raise RuntimeError(f"{flight.mrk.name}: no exposure times (week {mrk[0].week}, TOW {mrk[0].tow:.0f} on every row): "
+                           "the photos cannot be placed on the PPK trajectory, so this session cannot be post-processed; "
+                           "their on-board RTK positions are all there is")
     log.info(ui.step(1, 5, "%s: %d camera events in %s, %d images"), flight.name, len(mrk), flight.mrk.name, len(flight.images))
     missing_images = [e.id for e in mrk if e.id not in flight.images]
     if missing_images:
@@ -309,7 +313,28 @@ def _basepoint_arg(arg: str):
     return basepoint_at(_flight_path(arg))
 
 
+NO_TIMES = 5  # exit code: the MRK has no exposure times, so the folder can never be processed (nothing ordered)
+
+
+def _no_times(flight_arg: str) -> bool:
+    """True (and logged) when a flight folder's MRK has no exposure times; base points and unreadable folders: False."""
+    from .status import untimed_mrk
+    try:
+        if _basepoint_arg(flight_arg):
+            return False
+        flights = load_flights(_flight_path(flight_arg))
+    except (FileNotFoundError, ValueError):
+        return False
+    why = untimed_mrk(flights)
+    if why:
+        log.warning("%s: MRK has no exposure times (%s); it cannot be post-processed, so no RINEX is ordered "
+                    "and nothing is processed", flights[0].name, why)
+    return bool(why)
+
+
 def cmd_estpos_window(a: argparse.Namespace) -> int:
+    if _no_times(a.flight):
+        return NO_TIMES
     bp = _basepoint_arg(a.flight)
     if bp:
         orders = plan_basepoint_orders(bp, a.buffer, a.max_hours)
@@ -339,6 +364,8 @@ def _project_names(folder: str, n_orders: int, explicit: str | None) -> list[lis
 
 def cmd_estpos_order(a: argparse.Namespace) -> int:
     """Order a Virtual RINEX for a flight on the ESTPOS portal and download it into the flight folder."""
+    if _no_times(a.flight):
+        return NO_TIMES  # before the Playwright import and the portal: nothing to order for such a folder
     try:
         from . import estpos_web
     except ImportError as exc:
@@ -685,6 +712,8 @@ def resolve_bases(flights: list[Flight], base_arg: str | None, base_dir: str | N
 
 
 def cmd_process(a: argparse.Namespace) -> int:
+    if _no_times(a.flight):
+        return NO_TIMES
     flights = load_flights(_flight_path(a.flight))
     if len(flights) > 1:
         log.info("%s: %d sessions (%s), results are merged into one geo.txt", flights[0].name, len(flights),
