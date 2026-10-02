@@ -6,6 +6,9 @@ DJI_*/
 data/
 *.trace
 
+# launcher upgrade check cache
+.version-check.json
+
 # python / editor
 __pycache__/
 *.pyc
