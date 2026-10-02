@@ -52,9 +52,13 @@ def test_latest_versions_uses_the_daily_cache(launcher, tmp_path, monkeypatch):
     assert len(calls) == 2
 
 
-def test_unprocessable_folders_sort_last(launcher):
-    rows = [{"folder": "a", "next": "no-times"}, {"folder": "b", "next": "done"}, {"folder": "c", "next": "order"}]
-    assert [r["folder"] for r in launcher.sort_rows(rows)] == ["b", "c", "a"]
+def test_rows_sort_newest_first_unprocessable_last(launcher):
+    rows = [{"folder": "old", "next": "done", "flown": "2026-08-01 10:00 - 10:20 EEST"},
+            {"folder": "untimed", "next": "no-times", "flown": "2026-10-03 09:00 - 09:05 EEST"},
+            {"folder": "unknown", "next": "order", "flown": "?"},
+            {"folder": "new", "next": "order", "flown": "2026-10-02 17:03 - 17:24 EEST"},
+            {"folder": "same-day-earlier", "next": "done", "flown": "2026-10-02 09:30 - 09:50 EEST"}]
+    assert [r["folder"] for r in launcher.sort_rows(rows)] == ["new", "same-day-earlier", "old", "unknown", "untimed"]
 
 
 def test_unprocessable_folders_cannot_be_ticked(launcher):
