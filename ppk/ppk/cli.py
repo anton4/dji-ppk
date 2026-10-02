@@ -32,6 +32,7 @@ DEFAULT_CONF = os.environ.get("PPK_CONF", "/app/config/dji_m4e.conf")
 STATIC_CONF = os.environ.get("PPK_STATIC_CONF", str(Path(DEFAULT_CONF).parent / "drtk3_static.conf"))
 DEFAULT_OUT = os.environ.get("PPK_OUT_DIR", "/data/out")
 DEFAULT_BASE_DIR = os.environ.get("PPK_BASE_DIR", "/data/base")
+PROCESSING_LOG = "processing.log"  # the whole console output of a processing run, uncolored, in the results folder
 DEFAULT_IN_PLACE = os.environ.get("PPK_IN_PLACE", "").lower() in ("1", "true", "on", "yes")
 
 
@@ -699,14 +700,15 @@ def cmd_process(a: argparse.Namespace) -> int:
     out_dir = _out_dir_for(Path(a.out_dir), flights[0], a.in_place)
     if a.name and not a.in_place:
         out_dir = Path(a.out_dir) / a.name
-    summary = process_sessions(flights, bases, out_dir, Path(a.conf), _parse_overrides(a.set), a.geo_accuracy,
-                               a.fixed_only, a.keep_work, [Path(n) for n in (a.nav or [])])
-    ev = summary["events"]
-    print()
-    print(ui.ok(f"{flights[0].name}: {ev['fix']}/{ev['mrk']} photos fixed, geo.txt has {summary['geo_txt_rows']} rows")
-          if ev["fix"] == ev["mrk"] else ui.warn(f"{flights[0].name}: {ev['fix']}/{ev['mrk']} photos fixed, {ev['unsolved']} unsolved, "
-                                                 f"geo.txt has {summary['geo_txt_rows']} rows"))
-    print(ui.c(f"  in {out_dir}: geo.txt; in {results_dir(out_dir)}: events.csv, summary.json, accuracy.txt", "dim"))
+    with ui.tee_log(results_dir(out_dir) / PROCESSING_LOG):
+        summary = process_sessions(flights, bases, out_dir, Path(a.conf), _parse_overrides(a.set), a.geo_accuracy,
+                                   a.fixed_only, a.keep_work, [Path(n) for n in (a.nav or [])])
+        ev = summary["events"]
+        print()
+        print(ui.ok(f"{flights[0].name}: {ev['fix']}/{ev['mrk']} photos fixed, geo.txt has {summary['geo_txt_rows']} rows")
+              if ev["fix"] == ev["mrk"] else ui.warn(f"{flights[0].name}: {ev['fix']}/{ev['mrk']} photos fixed, {ev['unsolved']} unsolved, "
+                                                     f"geo.txt has {summary['geo_txt_rows']} rows"))
+        print(ui.c(f"  in {out_dir}: geo.txt; in {results_dir(out_dir)}: events.csv, summary.json, accuracy.txt, {PROCESSING_LOG}", "dim"))
     return 0
 
 
@@ -728,7 +730,8 @@ def cmd_watch(a: argparse.Namespace) -> int:
     overrides = _parse_overrides(a.set)
 
     def run(flights: list[Flight], bases: list[Path], target: Path) -> None:
-        process_sessions(flights, bases, target, Path(a.conf), overrides, a.geo_accuracy, a.fixed_only)
+        with ui.tee_log(results_dir(target) / PROCESSING_LOG):
+            process_sessions(flights, bases, target, Path(a.conf), overrides, a.geo_accuracy, a.fixed_only)
 
     watch(Path(a.flights_dir), Path(a.base_dir) if a.base_dir else None, Path(a.out_dir), run,
           int(a.poll or os.environ.get("PPK_POLL_SECONDS", 30)), once=a.once, in_place=a.in_place)

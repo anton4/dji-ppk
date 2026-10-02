@@ -303,10 +303,12 @@ def format_in_short(rtk: dict, quality: dict) -> str:
         lines.append(f" {'':34}{'worst ' + f'{h['max_mm'] / 10:.0f} cm':<16}"
                      f"{'worst ' + f'{v['max_mm'] / 10:.0f} cm':<16}worst photo")
         if "north" in rtk:
-            lines.append(f" {'  of which a constant shift':<34}{f'{rtk['offset_horizontal_mm'] / 10:.0f} cm':<16}"
-                         f"{f'{rtk['up']['mean_mm'] / 10:+.0f} cm':<16}RTK base position error")
-            lines.append(f" {'  and scatter around it':<34}{f'{rtk['scatter_horizontal_mm'] / 10:.0f} cm':<16}"
-                         f"{f'{rtk['up']['std_mm'] / 10:.1f} cm':<16}1 sigma")
+            def cm(mm: float, sign: str = "") -> str:  # one decimal below 10 cm, so a small value never reads "-0 cm"
+                return f"{mm / 10:{sign}.{0 if abs(mm) >= 100 else 1}f} cm"
+            lines.append(f" {'  of which a constant shift':<34}{cm(rtk['offset_horizontal_mm']):<16}"
+                         f"{cm(rtk['up']['mean_mm'], '+'):<16}RTK base position error")
+            lines.append(f" {'  and scatter around it':<34}{cm(rtk['scatter_horizontal_mm']):<16}"
+                         f"{cm(rtk['up']['std_mm']):<16}1 sigma")
     else:
         lines.append(f" {'DJI on-board RTK (as flown)':<34}{'n/a':<16}{'n/a':<16}(no RTK fixed photos in the MRK)")
     if ppk_h is not None and ppk_v is not None:
