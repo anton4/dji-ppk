@@ -314,6 +314,53 @@ def test_mrk_without_exposure_times(tmp_path):
         assert main([cmd, str(d)]) == NO_TIMES
 
 
+def _track_events(lag_s: float, lever: float, offset_mm=(60.0, -120.0), noise_m: float = 0.0, speed: float = 5.0):
+    """Lines flown east and west at `speed`, 2 photos/s; the MRK position is the antenna `lag_s` later plus `lever`
+    times the camera offset (which turns with the heading), plus a constant 30 cm base error."""
+    import random
+    from datetime import timedelta
+    from ppk.outputs import CameraEvent
+    from ppk.offsets import apply_ned_offset
+    rnd = random.Random(1)
+    out, t0, k = [], datetime(2026, 10, 2, 14, 0, 0), 0
+    for line in range(6):
+        sign = 1 if line % 2 == 0 else -1
+        for j in range(40):
+            t = t0 + timedelta(seconds=k * 0.5 + line * 20)  # 20 s turn between lines: no velocity across it
+            e, n = sign * (j * 0.5 * speed) + (0 if sign > 0 else 39 * 0.5 * speed), line * 30.0
+            lat, lon, h = apply_ned_offset(58.4, 26.7, 100.0, n, e, 0.0)
+            on, oe = sign * offset_mm[0], sign * offset_mm[1]  # the camera offset flips with the heading
+            mn = n + 0.30 + lever * on / 1000 + rnd.gauss(0, noise_m)
+            me = e + sign * speed * lag_s + lever * oe / 1000 + rnd.gauss(0, noise_m)
+            mlat, mlon, mh = apply_ned_offset(58.4, 26.7, 100.0, mn, me, 0.0)
+            out.append(CameraEvent(id=k, image=f"{k}.JPG", time=t, tow=0.0, week=2435, lat=lat, lon=lon, ellh=h, q=1, ns=20,
+                                   sdn=0.003, sde=0.002, sdu=0.006, ratio=20.0, ant_lat=lat, ant_lon=lon, ant_h=h,
+                                   off_n_mm=on, off_e_mm=oe, off_v_mm=150.0, mrk_lat=mlat, mrk_lon=mlon, mrk_ellh=mh, mrk_q=50))
+            k += 1
+    return out
+
+
+def test_rtk_scatter_split_into_lag_and_camera_offset():
+    from ppk.outputs import rtk_vs_ppk, format_rtk_vs_ppk, format_in_short
+    r = rtk_vs_ppk(_track_events(lag_s=0.03, lever=0.0, noise_m=0.005))
+    t = r["track"]
+    assert t["lag_ms"] == pytest.approx(30, abs=3) and abs(t["lever"]) < 0.1 and t["scatter_after_mm"] < 12
+    assert t["along_rms_mm"] > 5 * t["cross_rms_mm"] and r["scatter_horizontal_mm"] > 100
+    text = format_rtk_vs_ppk(r)
+    assert "mostly a 30 ms timing lag" in text and "only PPK does" in text and "+30 ms timing lag" in format_in_short(r, {})
+    t = rtk_vs_ppk(_track_events(lag_s=0.0, lever=1.0, noise_m=0.005))["track"]
+    assert t["lever"] == pytest.approx(1.0, abs=0.1) and abs(t["lag_ms"]) < 3 and t["scatter_after_mm"] < 12
+    assert "so it is no photo error" in format_rtk_vs_ppk(rtk_vs_ppk(_track_events(lag_s=0.0, lever=1.0, noise_m=0.005)))
+    r = rtk_vs_ppk(_track_events(lag_s=0.0, lever=0.0, noise_m=0.05))  # pure noise: nothing to explain
+    assert "No clear timing or offset pattern" in format_rtk_vs_ppk(r)
+
+
+def test_rtk_track_needs_motion():
+    from ppk.outputs import rtk_vs_ppk, format_rtk_vs_ppk
+    r = rtk_vs_ppk(_track_events(lag_s=0.03, lever=0.0, speed=0.0))  # hovering
+    assert "track" not in r and "not enough straight flight" in format_rtk_vs_ppk(r)
+
+
 def test_local_time_helpers(monkeypatch):
     from ppk.timeutil import gpst_to_local, span_local
     monkeypatch.setenv("PPK_TZ", "Europe/Tallinn")

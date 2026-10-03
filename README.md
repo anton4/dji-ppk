@@ -203,6 +203,19 @@ Every later visit: same marker, same pole height, Manual Calibration with the sa
 the first such flight once with the normal pipeline: its "RTK base offset" should now be within 2-3 cm of zero.
 Re-survey only when the marker or the pole changes; a second log of the same point is reported next to the first.
 
+How accurate is flying on the known point without PPK? The base error goes away; the survey (~1-2 cm against
+ESTPOS) and setting the tripod up again over the marker (~1 cm if the spot is marked) remain. On top of that comes the
+per-photo scatter of the on-board RTK, which a known point does not change. The "on-board RTK vs PPK" report splits it
+into the part along and across the flight direction and fits a timing lag of the MRK positions and the camera offset:
+
+- a **timing lag** is a real photo error that grows with flight speed; only PPK removes it,
+- a **camera offset** term near 1 means the MRK holds the camera position rather than the antenna's, so that part is no
+  photo error at all,
+- what is left is the RTK noise (vertical: the `up` scatter).
+
+So the photo error without PPK is about survey + setup + lag × speed + RTK noise; PPK gives 1-3 cm regardless of the
+base. Processing one flight with PPK shows all terms for your drone and speed.
+
 Which correction is applied. The survey's correction (static solution minus broadcast position) puts the antenna on
 its true phase centre as RTKLIB sees the station's antenna without a model. The drone-derived correction (the mean
 on-board-RTK-vs-PPK offset of a same-day flight) is what makes the drone's RTK agree with the PPK result, and it
