@@ -208,6 +208,31 @@ The PPK figures are RTKLIB's own estimates, not verified against ground control 
 setups typically show 1–3 cm. Surveying your own control points is possible with the D-RTK 3 as a static logger
 against a Virtual RINEX, but is not implemented here.
 
+### Flying on an NTRIP base instead
+
+PPK uses only the drone's own raw observations (`.OBS`) and the ESTPOS Virtual RINEX; the base the drone listened to
+during the flight takes no part in it. Any NTRIP correction stream can therefore replace the D-RTK 3 and its PPP
+calibration, for example a community base on [rtk2go.com](http://rtk2go.com:2101/SNIP::STATUS) (free, needs mobile
+data on the controller), and the photo positions after PPK stay the same:
+
+| | D-RTK 3 calibrated by PPP + RINEX PPK | NTRIP base (e.g. rtk2go) + RINEX PPK |
+|---|---|---|
+| **Setup on site** | PPP calibration, ~20–25 min to settle | connect in Pilot 2: minutes; needs mobile data |
+| **Positions written during the flight** | 30–40 cm off | depends on the base: unknown until measured |
+| **Photo positions after PPK** | ~1–3 cm, EUREF-EST97 | ~1–3 cm, EUREF-EST97: the same |
+
+- **A community base is one hobby station, not a network:** the full distance to it counts (rule of thumb
+  1 cm + 1 ppm horizontally, about twice that vertically). At ~30 km a fix takes longer and drops to float more often.
+- **Its coordinates are what the owner typed in:** method, accuracy and frame are unknown. In WGS84/ITRF the flight sits
+  0.5–0.9 m from the cadastre (see [Using the results in WebODM](#using-the-results-in-webodm)), and many bases send no
+  antenna type (RTCM 1033), which costs a few more centimetres in height. A mountpoint's position, messages and uptime
+  are on `http://rtk2go.com:2101/SNIP::MOUNTPT?NAME=<mountpoint>`.
+- **None of this reaches the PPK result.** The on-board RTK vs PPK report measures the base: its "RTK base offset" is
+  how far that mountpoint is from EUREF-EST97. Only photos with an RTK fix count, so a base that rarely fixes says
+  little. Without PPK the flight inherits the base's error, and the owner can change the base at any time.
+- **Not yet verified here:** that the drone still writes the `.OBS`/`.NAV`/`.MRK` files when flying on NTRIP; check
+  the first such flight.
+
 ### Reference flight and engine settings
 
 Reference flight: 20 min, 5 Hz, 1230 photos, ESTPOS Virtual RINEX 130 m from the site, compared with Emlid Studio 1.10
