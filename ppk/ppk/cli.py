@@ -184,6 +184,10 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
                     "Use --fixed-only to leave them out, or fix the cause: %s", ev["float"],
                     "the base has no navigation files, so GPS/BeiDou were not used" if not base_navs and stale
                     else "check sky view / base coverage")
+    if ev["other"] and not fixed_only:
+        # RTKLIB counts only satellites with carrier phase in ns: a code-only (dgps) solution shows 0 of them
+        log.warning("%s photos have no carrier-phase solution (decimetres to metres off); they are in geo.txt too. "
+                    "Use --fixed-only to leave them out", other_text(ev["other_q"]))
 
     quality = solution_quality(matched, len(mrk), traj.rows)
     summary["quality"] = quality

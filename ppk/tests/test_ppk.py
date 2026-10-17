@@ -1003,13 +1003,17 @@ def test_phase_gaps_and_check(tmp_path):
     assert phase_check(base, hdr, t(0), t(3), "flight").level == "PASS"
 
 
-def test_match_events_drops_rows_without_satellites():
+def test_code_only_photos_are_kept_and_named():
+    from ppk.outputs import format_quality, solution_quality
     ev = read_pos(FIX / "sample_events.pos")
     mrk = parse_mrk(FIX / "sample.MRK")
     rows = sorted(ev.rows, key=lambda r: r.time)
-    rows[0].ns = 0  # RTKLIB only extrapolated its filter here (Q 4, no satellites)
+    rows[0].q, rows[0].ns = 4, 0  # code-only (dgps): RTKLIB's ns counts satellites with carrier phase only
     matched, unmatched = match_events(mrk, rows, {})
-    assert len(matched) == 4 and len(unmatched) == 1
+    assert len(matched) == 5 and not unmatched  # a decimetre-to-metre position, still better than none
+    q = solution_quality(matched, len(mrk), read_pos(FIX / "sample.pos").rows)
+    assert q["photos"]["other_q"] == {"dgps": 1}
+    assert "4/5 fixed (80.0 %), 0 float, 1 dgps, 0 unsolved" in format_quality(q, "flight", "base.26o", None, None)
 
 
 def test_incomplete_base_set_aside_and_new_project_name(tmp_path):

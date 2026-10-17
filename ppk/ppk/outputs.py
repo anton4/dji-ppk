@@ -94,8 +94,7 @@ def match_events(mrk: list[MrkEvent], rows: list[PosRow], images: dict[int, Path
                 dt = abs((rows[j].time - t).total_seconds())
                 if dt <= MATCH_TOLERANCE_S and (best is None or dt < best[0]):
                     best = (dt, rows[j])
-        # ns 0: RTKLIB had no usable satellite and only extrapolated its filter state (Q may still read 4): no position
-        if best is None or best[1].q == 0 or best[1].ns == 0:
+        if best is None or best[1].q == 0:
             unmatched.append(ev)
             continue
         r = best[1]
@@ -204,7 +203,7 @@ def solution_quality(matched: list[CameraEvent], n_mrk: int, traj_rows: list) ->
                    "float": sum(1 for e in matched if e.q == 2), "other": sum(1 for e in matched if e.q not in (1, 2)),
                    "other_q": other_q(matched), "unsolved": n_mrk - len(matched)},
         "trajectory": {"epochs": len(traj_rows), "fixed": sum(1 for r in traj_rows if r.q == 1),
-                       "float": sum(1 for r in traj_rows if r.q == 2), "no_satellites": sum(1 for r in traj_rows if r.ns == 0),
+                       "float": sum(1 for r in traj_rows if r.q == 2), "no_phase": sum(1 for r in traj_rows if r.ns == 0),
                        "seconds": round(duration)},
         "satellites": {"min": ns[0], "median": statistics.median(ns), "max": ns[-1]} if ns else {},
         "std_mm": {"north": _stats_mm([e.sdn for e in fixed]), "east": _stats_mm([e.sde for e in fixed]),
@@ -231,7 +230,7 @@ def format_quality(q: dict, flight_name: str, base_name: str, baseline_km: float
         f" photos:       {ph['fixed']}/{ph['mrk']} fixed ({fix_pct:.1f} %), {ph['float']} float, "
         f"{other_text(ph.get('other_q', {'other': ph['other']}))}, {ph['unsolved']} unsolved",
         f" trajectory:   {tr['fixed']}/{tr['epochs']} epochs fixed ({traj_pct:.1f} %), {tr['float']} float, "
-        + (f"{tr['no_satellites']} without satellites, " if tr.get("no_satellites") else "")
+        + (f"{tr['no_phase']} without carrier phase, " if tr.get("no_phase") else "")
         + f"{tr['seconds'] // 60:.0f} min {tr['seconds'] % 60:.0f} s",
     ]
     if sat:
