@@ -19,7 +19,7 @@ from .estpos import check_base, format_order, plan_order, plan_orders, plan_base
 from .events import write_obs_with_events
 from .mrk import has_exposure_times, parse_mrk
 from .offsets import ned_difference
-from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_summary, solution_quality, format_quality, rtk_vs_ppk, format_rtk_vs_ppk, format_in_short, results_dir, remove_legacy_outputs
+from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_summary, solution_quality, format_quality, rtk_vs_ppk, format_rtk_vs_ppk, format_in_short, results_dir, remove_legacy_outputs, other_q, other_text
 from .pos import read_pos
 from .rinex import prepare_obs, read_header, scan_obs_span, find_base_candidates, find_nav_files, stale_nav_systems, has_nav_files
 from .rtklib import rtklib_version, run_rnx2rtkp, write_conf
@@ -122,6 +122,8 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     hdr, checks = check_base(base_plain, flight, Path(os.environ.get("PPK_ANTEX", "")) or None)
     for c in checks:
         (log.error if c.level == "FAIL" else log.warning if c.level == "WARN" else log.info)("base: %s", c.message)
+    if any(c.level == "FAIL" and c.kind == "phase" for c in checks):
+        raise IncompleteBase(Path(base), f"base file {Path(base).name} has no carrier phase for part of the flight")
     if any(c.level == "FAIL" for c in checks):
         raise RuntimeError("base file failed validation, see log")
 
@@ -164,7 +166,7 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
         "trajectory": traj.counts(), "trajectory_fix_ratio": round(traj.fix_ratio, 4),
         "events": {"mrk": len(mrk), "solved": len(matched), "unsolved": len(unmatched),
                    "fix": sum(1 for e in matched if e.q == 1), "float": sum(1 for e in matched if e.q == 2),
-                   "other": sum(1 for e in matched if e.q not in (1, 2))},
+                   "other": sum(1 for e in matched if e.q not in (1, 2)), "other_q": other_q(matched)},
         "geo_txt_rows": n_geo, "images_missing": len(missing_images), "seconds": round(time.time() - t0, 1),
         "base_nav_files": [p.name for p in base_navs], "rover_nav_stale": sorted(stale),
         "outputs": {"events_csv": csv_path.name, "geo_txt": f"{prefix}geo.txt" if prefix else "../geo.txt", "trajectory_pos": res.pos_path.name,
@@ -175,7 +177,7 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     fixed_pct = 100 * ev["fix"] / len(mrk) if mrk else 0.0
     verdict = f"{ev['fix']}/{len(mrk)} photos fixed ({ui.pct(fixed_pct)}), trajectory {ui.pct(100 * traj.fix_ratio)} fixed"
     if ev["float"] or ev["other"] or ev["unsolved"]:
-        verdict += f"; {ev['float']} float, {ev['other']} other, {ev['unsolved']} unsolved"
+        verdict += f"; {ev['float']} float, {other_text(ev['other_q'])}, {ev['unsolved']} unsolved"
     log.info("%s", ui.ok(verdict) if fixed_pct >= 99 else ui.warn(verdict) if fixed_pct >= 95 else ui.bad(verdict))
     if ev["float"] and not fixed_only:
         log.warning("%d photos have only a float solution (decimetre-level); they are in geo.txt too. "
@@ -314,6 +316,39 @@ def _basepoint_arg(arg: str):
 
 
 NO_TIMES = 5  # exit code: the MRK has no exposure times, so the folder can never be processed (nothing ordered)
+BASE_INCOMPLETE = 6  # exit code: the base file lacks carrier phase during the flight; it was set aside, order a new one
+INCOMPLETE_SUFFIX = ".incomplete"
+
+
+class IncompleteBase(RuntimeError):
+    """The base file has no carrier phase for part of the flight (phase check FAIL): ordering it again is the fix."""
+
+    def __init__(self, base: Path, message: str):
+        super().__init__(message)
+        self.base = base
+
+
+def set_aside(base: Path) -> Path | None:
+    """Rename an incomplete base to <name>.incomplete[-n] so it is no longer picked up, and kept for reference. The
+    count of such files also gives the next order a new project name (see _project_names). None if not renamed."""
+    target = base.with_name(base.name + INCOMPLETE_SUFFIX)
+    n = 1
+    while target.exists():
+        n += 1
+        target = base.with_name(f"{base.name}{INCOMPLETE_SUFFIX}-{n}")
+    try:
+        base.rename(target)
+    except OSError as exc:
+        log.error("cannot set the incomplete base %s aside: %s", base, exc)
+        return None
+    log.warning("base %s set aside as %s; the next order gets a new project name, so the portal does not hand out "
+                "this file again", base.name, target.name)
+    return target
+
+
+def incomplete_count(directory: Path) -> int:
+    """Incomplete base files set aside in a folder: each one means its portal order must not be downloaded again."""
+    return sum(1 for p in directory.iterdir() if INCOMPLETE_SUFFIX in p.name) if directory.is_dir() else 0
 
 
 def _no_times(flight_arg: str) -> bool:
@@ -352,11 +387,18 @@ def _estpos_credentials() -> tuple[str, str]:
     return user, pw
 
 
-def _project_names(folder: str, n_orders: int, explicit: str | None) -> list[list[str]]:
-    """Per order: the portal project name to use, followed by older spellings accepted when matching."""
+def _project_names(folder: str, n_orders: int, explicit: str | None, retry: int = 0) -> list[list[str]]:
+    """Per order: the portal project name to use, followed by older spellings accepted when matching. `retry` counts
+    the incomplete base files set aside in the folder: their orders are on the portal under the earlier names and
+    must not be downloaded again, so the name gets an -r<retry> suffix and older spellings no longer match."""
     from . import estpos_web
     if explicit:
         return [[explicit[:30]]] if n_orders == 1 else [[f"{explicit[:28]}-{i}"] for i in range(1, n_orders + 1)]
+    if retry:
+        tag = f"-r{retry}"
+        if n_orders == 1:
+            return [[estpos_web.project_name(folder, estpos_web.PROJECT_MAX - len(tag)) + tag]]
+        return [[f"{estpos_web.project_name(folder, 28 - len(tag))}{tag}-{i}"] for i in range(1, n_orders + 1)]
     if n_orders == 1:
         return [estpos_web.project_candidates(folder)]
     return [[f"{estpos_web.project_name(folder, 28)}-{i}", f"{folder[:28]}-{i}"] for i in range(1, n_orders + 1)]
@@ -408,7 +450,7 @@ def cmd_estpos_order(a: argparse.Namespace) -> int:
         return 2
     if left <= 7:
         log.warning("only %d day(s) left before ESTPOS drops the RINEX data for this flight", left)
-    projects = _project_names(name, len(orders), a.project)
+    projects = _project_names(name, len(orders), a.project, incomplete_count(dest))
     for order, _fls in orders:
         if order.duration > timedelta(hours=a.max_hours):
             log.warning("order of %.2f h exceeds the %.1f h limit (one session is that long); the portal may refuse it",
@@ -466,7 +508,7 @@ def cmd_estpos_download(a: argparse.Namespace) -> int:
         if a.project:
             paths = [estpos_web.download_existing(a.project, dest, user, pw, timeout_min=a.timeout, headed=a.headed)]
         else:
-            projects = _project_names(name, len(orders), None)
+            projects = _project_names(name, len(orders), None, incomplete_count(dest))
             paths = estpos_web.download_for_orders([(o, p) for (o, _f), p in zip(orders, projects)], dest, user, pw,
                                                    timeout_min=a.timeout, headed=a.headed)
     except estpos_web.NotOrdered as exc:
@@ -504,6 +546,13 @@ def _report_downloaded_base(path: Path, directory: Path, rovers: list) -> int:
         print(ui.colorize_report(f"  [{c.level:>4}] {c.message}"))
     worst = "FAIL" if any(c.level == "FAIL" for c in checks) else "PASS"
     print(ui.colorize_report(f"Overall: {worst}"))
+    if any(c.level == "FAIL" and c.kind == "phase" for c in checks):
+        if path.parent.resolve() == directory.resolve():
+            set_aside(path)
+        what = "log" if rovers and not isinstance(rovers[0], Flight) else "flight"
+        print(f"\nThe portal delivered this Virtual RINEX without carrier phase for part of the {what}; order again later "
+              "(the next order gets a new project name)")
+        return BASE_INCOMPLETE
     if rovers and not isinstance(rovers[0], Flight):
         print(f"\nNext: ppk base-survey {directory}")
     else:
@@ -730,8 +779,17 @@ def cmd_process(a: argparse.Namespace) -> int:
     if a.name and not a.in_place:
         out_dir = Path(a.out_dir) / a.name
     with ui.tee_log(results_dir(out_dir) / PROCESSING_LOG):
-        summary = process_sessions(flights, bases, out_dir, Path(a.conf), _parse_overrides(a.set), a.geo_accuracy,
-                                   a.fixed_only, a.keep_work, [Path(n) for n in (a.nav or [])])
+        try:
+            summary = process_sessions(flights, bases, out_dir, Path(a.conf), _parse_overrides(a.set), a.geo_accuracy,
+                                       a.fixed_only, a.keep_work, [Path(n) for n in (a.nav or [])])
+        except IncompleteBase as exc:
+            log.error("%s", exc)
+            folders = {fl.directory.resolve() for fl in flights}
+            if not a.base and exc.base.parent.resolve() in folders and set_aside(exc.base):
+                print(f"\nNext: ./dji-ppk run {flights[0].name}   (orders a new Virtual RINEX and processes again)")
+            else:
+                print("\nNext: replace the base file with a complete one and process again")
+            return BASE_INCOMPLETE
         ev = summary["events"]
         print()
         print(ui.ok(f"{flights[0].name}: {ev['fix']}/{ev['mrk']} photos fixed, geo.txt has {summary['geo_txt_rows']} rows")

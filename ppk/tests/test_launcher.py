@@ -89,3 +89,27 @@ def test_unticked_folders_are_remembered(launcher, tmp_path, monkeypatch):
     launcher.remember(rows, ticked)
     monkeypatch.setattr(launcher, "_EXCLUDED", None)
     assert launcher.initial_ticks(rows) == [True, True, False]  # ticked again: forgotten
+
+
+def test_run_orders_again_when_the_base_is_incomplete(launcher, monkeypatch, capsys):
+    calls = []
+    codes = {"estpos-order": [0, 0], "process": [launcher.BASE_INCOMPLETE, 0]}
+
+    class Done:
+        def __init__(self, rc):
+            self.returncode = rc
+
+    def run_in(service, env, cmd, *args, capture=False):
+        calls.append(cmd)
+        return Done(codes[cmd].pop(0))
+    monkeypatch.setattr(launcher, "run_in", run_in)
+    monkeypatch.setattr(launcher, "folder_is_basepoint", lambda env, folder: False)
+    monkeypatch.setattr(launcher, "has_creds", lambda env: True)
+    assert launcher.act_run({}, "DJI_flight") == 0
+    assert calls == ["estpos-order", "process", "estpos-order", "process"]  # set aside by process, ordered anew, processed
+    assert "ordering a new one" in capsys.readouterr().out
+
+    calls.clear()
+    codes.update({"estpos-order": [0, launcher.BASE_INCOMPLETE], "process": [launcher.BASE_INCOMPLETE]})
+    assert launcher.act_run({}, "DJI_flight") == 3  # the new download is incomplete too: try again later, no loop
+    assert calls == ["estpos-order", "process", "estpos-order"]

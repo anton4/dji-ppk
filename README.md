@@ -303,6 +303,39 @@ RINEX + PPK become optional; how accurate that is depends on the drone, see
    Pole height         1.800 m
 ```
 
+### Setting up on the point
+
+The coordinates are only as good as the setup: a centring or height error goes 1:1 into every photo position, so aim
+for a few millimetres.
+
+**Mark the point** with a survey nail or a steel rod with a centre-punch dimple, flush in asphalt, concrete or a stake
+in the ground. Take a photo and tape distances to 2–3 fixed features (building corner, kerb) to find it again and to
+notice if it moved.
+
+| mounting | how | repeatability | height |
+|---|---|---|---|
+| **Permanent mount** (best for a site visited often) | concrete post or ground anchor with a fixed 5/8"-11 UNC stud (the D-RTK 3's thread); screw the station on directly | ~1–2 mm | constant, measured once |
+| **Fixed-length pole + tripod** (the DJI kit) | pole tip in the dimple, tripod legs adjusted until the pole's bubble is centred | ~3–5 mm with a checked bubble | the same locked pole length every visit |
+| **Tripod + tribrach** with optical or laser plummet | centre over the nail with the plummet, level the tribrach, station on a 5/8" adapter | ~1 mm horizontally | measured with a tape at every setup |
+
+- **Check the bubble before trusting it:** level the pole, turn it 180° and look again; if the bubble moves, adjust it
+  with the screw at its bottom. A 0.5° tilt on a 2 m pole moves the antenna 1.7 cm. Do not touch the tripod after
+  levelling, and check the bubble once more before take-off.
+- **Pole height** in DJI's definition runs from the pole tip to the nut joint, the face the station screws onto,
+  excluding the thread; DJI's own pole has height marks. Use one locked length every time (fully extended or a stop
+  marked with tape), never a freely sliding position. Measure it once with a steel tape, three times, to the
+  millimetre: that is the value for `--pole` and for Pilot 2 on every visit.
+- **On a tripod without a pole,** measure the vertical distance from the nail to the mounting face on three sides and
+  average. It changes with every setup, which is why the permanent mount or the fixed pole is preferable.
+- **The 10 cm phase-centre offset:** DJI's
+  [known issues list](https://dl.djicdn.com/downloads/d-rtk-3/List/D-RTK_3_Known_Issue_List_en_202501%20-%201.pdf)
+  (firmware of January 2025, issue 5) says to add 10 cm to ground elevation + pole height in Manual Calibration,
+  because the antenna's electrical centre sits that far above the mounting face. Whether a newer firmware does this
+  itself is not known. The survey report's "phase centre above the pole tip" line (expect pole + ~0.1 m) and the
+  first known-point flight's vertical "RTK base offset" (about ±10 cm if it is missing or applied twice) show it;
+  correct the saved Frequent Coordinate once. Enter the height the same way on every visit: a constant mistake shows
+  up in that check and can be corrected, a varying one cannot.
+
 ### Every later visit
 
 Same marker, same pole height, Manual Calibration with the saved Frequent Coordinate, fly. Process the first such
@@ -375,6 +408,10 @@ image:
 - **Outages:** when the portal's backend (X-pos) is down, the tool stops after about 90 s with a clear message and
   START stops the batch; orders the portal already accepted are reused on the next run. A timeout while waiting is
   reported as "placed, not ready yet" and also reused later.
+- **Incomplete files:** the base check also looks for carrier phase during the flight. ESTPOS once delivered a file
+  whose last 12 minutes had code but no phase: every epoch was there, yet RTK was impossible for the last 315 photos.
+  Such a file is renamed to `*.incomplete` and the next order gets a new project name (`…-r1`), so the portal does not
+  hand out the same file again. `./dji-ppk run <folder>` (and START) then orders and processes again by itself.
 - **`--dry-run`** fills and verifies the form, saves `estpos_order_form.png` and does not submit.
 - **Moving to another machine:** put the flight folders under its `FLIGHTS_DIR`, set `.env`, START. Orders placed
   earlier are found on the portal and downloaded without re-ordering.
@@ -474,7 +511,8 @@ docker compose --profile cli run --rm ppk-estpos estpos-download /data/flights/<
 ```
 
 Exit codes worth knowing: `3` order placed but not ready yet, `4` portal backend down, `5` the MRK has no exposure
-times (nothing ordered or processed).
+times (nothing ordered or processed), `6` the base has no carrier phase for part of the flight (set aside as
+`*.incomplete`; `./dji-ppk run` orders a new one).
 </details>
 
 ### Development

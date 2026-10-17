@@ -146,6 +146,59 @@ def scan_obs_span(path: str | Path, header: RinexHeader | None = None) -> tuple[
     return first, last, count
 
 
+MIN_PHASE_SATS = 5  # RTK needs carrier phase from at least 5 satellites (4 double differences)
+
+
+def _has_phase(record: str, cols: list[int]) -> bool:
+    for i in cols:
+        text = record[3 + 16 * i: 17 + 16 * i].strip()
+        try:
+            if text and float(text) != 0.0:
+                return True
+        except ValueError:
+            pass
+    return False
+
+
+def phase_gaps(path: str | Path, start: datetime, end: datetime, header: RinexHeader | None = None,
+               min_sats: int = MIN_PHASE_SATS) -> list[tuple[datetime, datetime, int]]:
+    """Runs (first, last, epochs) of RINEX 3 epochs between `start` and `end` in which fewer than `min_sats`
+    satellites carry carrier phase (any L observation). ESTPOS once delivered a Virtual RINEX whose last 12 minutes
+    had code, Doppler and SNR but empty phase fields: every epoch is there, yet RTK is impossible."""
+    header = header or read_header(path)
+    if header.version < 3:
+        return []
+    cols = {s: [i for i, t in enumerate(types) if t.startswith("L")] for s, types in header.obs_types.items()}
+    gaps: list[tuple[datetime, datetime, int]] = []
+    run: list = []  # [first, last, epochs] of the current gap
+    with open(path, "r", errors="replace") as fh:
+        for _ in range(header.header_lines):
+            next(fh)
+        for line in fh:
+            if not line.startswith(">"):
+                continue
+            try:
+                t, flag, n = parse_rinex3_epoch(line)
+            except ValueError:
+                continue
+            records = [next(fh, "") for _ in range(n)]  # satellites, or header lines for flags 2-5
+            if flag > 1 or t < start:
+                continue
+            if t > end:
+                break
+            if sum(1 for r in records if _has_phase(r, cols.get(r[:1], []))) >= min_sats:
+                if run:
+                    gaps.append((run[0], run[1], run[2]))
+                    run = []
+            elif run:
+                run[1], run[2] = t, run[2] + 1
+            else:
+                run = [t, t, 1]
+    if run:
+        gaps.append((run[0], run[1], run[2]))
+    return gaps
+
+
 def ecef_to_llh(x: float, y: float, z: float) -> tuple[float, float, float]:
     lon = math.atan2(y, x)
     p = math.hypot(x, y)

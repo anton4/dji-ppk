@@ -973,3 +973,56 @@ def test_basepoint_inside_flight_folder(tmp_path):
     bp = bps[0]
     assert list(basepoint_bases(bp, None).values()) == [base]
     assert find_base_candidates(f) == [base]  # the station's OBS in the sub-folder is not seen by the flight
+
+
+def _phase_base(path: Path, epochs: int, phase_until: int) -> Path:
+    """A Virtual RINEX (fixture header) with 6 GPS satellites at 1 s whose carrier phase stops after epoch `phase_until`."""
+    lines = [(FIX / "base_header.26o").read_text()]
+    for i in range(epochs):
+        lines.append(f"> 2026 09 12 10 00 {i:2d}.0000000  0  6\n")
+        for prn in range(1, 7):
+            code = f"{21000000 + prn * 1000 + i:14.3f}  "
+            phase = f"{110000000 + prn * 5000 + i * 5:14.3f}  " if i <= phase_until else " " * 16
+            lines.append(f"G{prn:02d}" + code + phase + f"{100.0:14.3f}  " + f"{48.0:14.3f}  " + "\n")
+    path.write_text("".join(lines))
+    return path
+
+
+def test_phase_gaps_and_check(tmp_path):
+    from ppk.estpos import phase_check
+    from ppk.rinex import phase_gaps
+    base = _phase_base(tmp_path / "virt.26o", 40, 4)
+    hdr = read_header(base)
+    t = lambda s: datetime(2026, 9, 12, 10, 0, s)
+    assert phase_gaps(base, t(0), t(39), hdr) == [(t(5), t(39), 35)]
+    assert phase_gaps(base, t(0), t(4), hdr) == []
+    c = phase_check(base, hdr, t(1), t(38), "flight")  # 1 s margin: base epochs 10:00:00 - 10:00:39
+    assert c.level == "FAIL" and c.kind == "phase" and "35 s of the flight span (10:00:05 - 10:00:39 GPST)" in c.message
+    c = phase_check(base, hdr, t(1), t(10), "flight")
+    assert c.level == "WARN" and "7 s" in c.message  # short gap: only the photos in it suffer
+    assert phase_check(base, hdr, t(0), t(3), "flight").level == "PASS"
+
+
+def test_match_events_drops_rows_without_satellites():
+    ev = read_pos(FIX / "sample_events.pos")
+    mrk = parse_mrk(FIX / "sample.MRK")
+    rows = sorted(ev.rows, key=lambda r: r.time)
+    rows[0].ns = 0  # RTKLIB only extrapolated its filter here (Q 4, no satellites)
+    matched, unmatched = match_events(mrk, rows, {})
+    assert len(matched) == 4 and len(unmatched) == 1
+
+
+def test_incomplete_base_set_aside_and_new_project_name(tmp_path):
+    from ppk.cli import _project_names, incomplete_count, set_aside
+    from ppk.rinex import find_base_candidates
+    z = tmp_path / "virt290j30.rnx.zip"
+    z.write_text("x")
+    assert set_aside(z).name == "virt290j30.rnx.zip.incomplete"
+    z.write_text("y")  # the next download of the same window has the same name
+    assert set_aside(z).name == "virt290j30.rnx.zip.incomplete-2"
+    assert incomplete_count(tmp_path) == 2 and find_base_candidates(tmp_path) == []
+    folder = "DJI_202610171226_043_TRT-moisapark"
+    first = _project_names(folder, 1, None)[0][0]
+    again = _project_names(folder, 1, None, 1)
+    assert again == [[again[0][0]]] and again[0][0].endswith("-r1") and len(again[0][0]) <= 30 and again[0][0] != first
+    assert all(n[0].endswith(f"-r2-{i}") and len(n[0]) <= 30 for i, n in enumerate(_project_names(folder, 2, None, 2), 1))

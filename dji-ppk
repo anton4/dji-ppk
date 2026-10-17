@@ -492,6 +492,7 @@ def act_process(env, folder, *extra):
 
 PORTAL_DOWN = 4  # exit code of estpos-order / estpos-download when the ESTPOS backend is unavailable
 NO_TIMES = 5  # exit code of estpos-order / estpos-window / process: the MRK has no exposure times (nothing done)
+BASE_INCOMPLETE = 6  # exit code of process / estpos-order: the base lacks carrier phase during the flight, set aside as *.incomplete
 
 
 def host_folder(env: dict[str, str], folder: str) -> Path:
@@ -579,28 +580,53 @@ def act_survey(env: dict[str, str], folder: str, *extra: str) -> int:
     return 0
 
 
+def order_step(env: dict[str, str], folder: str) -> int | None:
+    """Order the Virtual RINEX if the folder needs one (or download an order already placed). None: go on and
+    process; otherwise the code to stop with."""
+    rc = run_in("ppk-estpos", env, "estpos-order", cpath(folder)).returncode
+    if rc == PORTAL_DOWN:
+        return PORTAL_DOWN
+    if rc == NO_TIMES:
+        return no_times_skipped(folder)
+    if rc == 3:
+        print(c(f"○ {folder}: the order is placed but not ready yet; run again later to download and process it", "yellow"))
+        return 3
+    if rc == BASE_INCOMPLETE:
+        print(c(f"○ {folder}: the portal delivered the Virtual RINEX without carrier phase for part of the flight (set aside as "
+                "*.incomplete); run again later to order a new one", "yellow"))
+        return 3
+    if rc != 0:
+        print(c(f"✘ ordering the Virtual RINEX failed for {folder}", "red", "bold"), file=sys.stderr)
+        return 1
+    return None
+
+
 def act_run(env: dict[str, str], folder: str) -> int:
     if folder_is_basepoint(env, folder):
         return act_survey(env, folder)
     print(c(f"== {folder}: base file", "bold"))
     if has_creds(env):
-        rc = run_in("ppk-estpos", env, "estpos-order", cpath(folder)).returncode
-        if rc == PORTAL_DOWN:
-            return PORTAL_DOWN
-        if rc == NO_TIMES:
-            return no_times_skipped(folder)
-        if rc == 3:
-            print(c(f"○ {folder}: the order is placed but not ready yet; run again later to download and process it", "yellow"))
-            return 3
-        if rc != 0:
-            print(c(f"✘ ordering the Virtual RINEX failed for {folder}", "red", "bold"), file=sys.stderr)
-            return 1
+        rc = order_step(env, folder)
+        if rc is not None:
+            return rc
     else:
         print(c("ESTPOS credentials not set in .env: skipping the order step, using whatever base file is in the folder", "yellow"))
     print(c(f"== {folder}: processing", "bold"))
     rc = run_in("ppk", env, "process", cpath(folder)).returncode
+    if rc == BASE_INCOMPLETE and has_creds(env):
+        # process set the base aside; the new order gets a new project name, so the portal cannot hand out the old file
+        print(c(f"== {folder}: the base file has no carrier phase for part of the flight, ordering a new one", "bold"))
+        rc = order_step(env, folder)
+        if rc is not None:
+            return rc
+        print(c(f"== {folder}: processing", "bold"))
+        rc = run_in("ppk", env, "process", cpath(folder)).returncode
     if rc == NO_TIMES:
         return no_times_skipped(folder)
+    if rc == BASE_INCOMPLETE:
+        print(c(f"✘ {folder}: the base file has no carrier phase for part of the flight (set aside as *.incomplete); "
+                "run again to order a new one", "red", "bold"), file=sys.stderr)
+        return 1
     if rc != 0:
         print(c(f"✘ processing failed for {folder}", "red", "bold"), file=sys.stderr)
         return 1

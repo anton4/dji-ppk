@@ -12,7 +12,7 @@ from pathlib import Path
 
 from .mrk import MrkEvent
 from .offsets import apply_ned_offset, ned_difference
-from .pos import PosRow
+from .pos import PosRow, Q_LABEL
 from .timeutil import fmt
 
 MATCH_TOLERANCE_S = 0.0015
@@ -94,7 +94,8 @@ def match_events(mrk: list[MrkEvent], rows: list[PosRow], images: dict[int, Path
                 dt = abs((rows[j].time - t).total_seconds())
                 if dt <= MATCH_TOLERANCE_S and (best is None or dt < best[0]):
                     best = (dt, rows[j])
-        if best is None or best[1].q == 0:
+        # ns 0: RTKLIB had no usable satellite and only extrapolated its filter state (Q may still read 4): no position
+        if best is None or best[1].q == 0 or best[1].ns == 0:
             unmatched.append(ev)
             continue
         r = best[1]
@@ -176,6 +177,21 @@ def _stats_mm(values: list[float]) -> dict[str, float]:
             "max": round(1000 * v[-1], 1)}
 
 
+def other_q(items) -> dict[str, int]:
+    """Solutions (photos or trajectory rows) that are neither fix nor float, counted by RTKLIB's Q label."""
+    out: dict[str, int] = {}
+    for e in items:
+        if e.q not in (1, 2):
+            k = Q_LABEL.get(e.q, str(e.q))
+            out[k] = out.get(k, 0) + 1
+    return out
+
+
+def other_text(counts: dict[str, int]) -> str:
+    """'3 single, 1 dgps' from other_q(), '0 other' when there are none."""
+    return ", ".join(f"{n} {k}" for k, n in sorted(counts.items(), key=lambda kv: -kv[1]) if n) or "0 other"
+
+
 def solution_quality(matched: list[CameraEvent], n_mrk: int, traj_rows: list) -> dict:
     """Quality figures of a solution without any external reference: fix counts, satellites, RTKLIB's own
     standard deviations of the photo positions and the ambiguity ratio test."""
@@ -186,9 +202,10 @@ def solution_quality(matched: list[CameraEvent], n_mrk: int, traj_rows: list) ->
     q = {
         "photos": {"mrk": n_mrk, "solved": len(matched), "fixed": len(fixed),
                    "float": sum(1 for e in matched if e.q == 2), "other": sum(1 for e in matched if e.q not in (1, 2)),
-                   "unsolved": n_mrk - len(matched)},
+                   "other_q": other_q(matched), "unsolved": n_mrk - len(matched)},
         "trajectory": {"epochs": len(traj_rows), "fixed": sum(1 for r in traj_rows if r.q == 1),
-                       "float": sum(1 for r in traj_rows if r.q == 2), "seconds": round(duration)},
+                       "float": sum(1 for r in traj_rows if r.q == 2), "no_satellites": sum(1 for r in traj_rows if r.ns == 0),
+                       "seconds": round(duration)},
         "satellites": {"min": ns[0], "median": statistics.median(ns), "max": ns[-1]} if ns else {},
         "std_mm": {"north": _stats_mm([e.sdn for e in fixed]), "east": _stats_mm([e.sde for e in fixed]),
                    "up": _stats_mm([e.sdu for e in fixed]),
@@ -211,8 +228,11 @@ def format_quality(q: dict, flight_name: str, base_name: str, baseline_km: float
         f" Solution quality: {flight_name}",
         "=" * 78,
         f" base:         {base_name}" + (f"   baseline {baseline_km:.2f} km" if baseline_km is not None else ""),
-        f" photos:       {ph['fixed']}/{ph['mrk']} fixed ({fix_pct:.1f} %), {ph['float']} float, {ph['other']} other, {ph['unsolved']} unsolved",
-        f" trajectory:   {tr['fixed']}/{tr['epochs']} epochs fixed ({traj_pct:.1f} %), {tr['float']} float, {tr['seconds'] // 60:.0f} min {tr['seconds'] % 60:.0f} s",
+        f" photos:       {ph['fixed']}/{ph['mrk']} fixed ({fix_pct:.1f} %), {ph['float']} float, "
+        f"{other_text(ph.get('other_q', {'other': ph['other']}))}, {ph['unsolved']} unsolved",
+        f" trajectory:   {tr['fixed']}/{tr['epochs']} epochs fixed ({traj_pct:.1f} %), {tr['float']} float, "
+        + (f"{tr['no_satellites']} without satellites, " if tr.get("no_satellites") else "")
+        + f"{tr['seconds'] // 60:.0f} min {tr['seconds'] % 60:.0f} s",
     ]
     if sat:
         lines.append(f" satellites:   {sat['min']} - {sat['max']} per photo (median {sat['median']:.0f})")
@@ -342,8 +362,9 @@ def format_rtk_vs_ppk(r: dict) -> str:
     lines.append(f" RTK base offset: {r['offset_horizontal_mm'] / 10:.1f} cm horizontal, {r['up']['mean_mm'] / 10:+.1f} cm up, "
                  f"{r['offset_3d_mm'] / 10:.1f} cm 3D  -> this is how far the on-board RTK base position was off")
     lines.append(f" RTK scatter:     {r['scatter_horizontal_mm']:.1f} mm horizontal, {r['up']['std_mm']:.1f} mm up (1 sigma)")
-    lines.append(" The mean offset is the correction PPK applies to the whole flight (PPP-surveyed D-RTK 3 bases are")
-    lines.append(" typically off by decimetres); up scatter is the RTK noise.")
+    lines.append(" The mean offset is the correction PPK applies to the whole flight: the D-RTK 3 base coordinate against")
+    lines.append(" EUREF-EST97. After a PPP calibration it includes the datum difference (PPP gives a global frame at")
+    lines.append(" today's date), so decimetres are normal; up scatter is the RTK noise.")
     t = r.get("track")
     if t:
         lines.append("-" * 78)
@@ -411,9 +432,10 @@ def format_in_short(rtk: dict, quality: dict) -> str:
     lines += ["-" * 78,
               " 'DJI on-board RTK' is the position the drone wrote into the photos during the flight, measured",
               " against the PPK result (EUREF-EST97). The constant shift is how far the D-RTK 3 base position was",
-              " off; `ppk base-survey` removes it once for a site. The accuracy the D-RTK 3 app shows after PPP",
-              " calibration is the solution's own precision estimate, not this offset. 'after PPK' is likewise",
-              " RTKLIB's own estimate, not verified against ground control points; independent checks typically",
-              " show 1-3 cm.",
+              " off from EUREF-EST97; `ppk base-survey` removes it once for a site. After a PPP calibration it",
+              " includes the datum difference (PPP gives a global frame at today's date), which the accuracy the",
+              " D-RTK 3 app shows does not cover: that is the solution's own precision estimate. 'after PPK' is",
+              " likewise RTKLIB's own estimate, not verified against ground control points; independent checks",
+              " typically show 1-3 cm.",
               "=" * 78]
     return "\n".join(lines)

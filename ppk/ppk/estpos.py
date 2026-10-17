@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 
 from .discover import Flight
 from .mrk import parse_mrk
-from .rinex import RinexHeader, read_header, scan_obs_span
+from .rinex import RinexHeader, phase_gaps, read_header, scan_obs_span
 from .timeutil import span_local, local_tz
 
 PORTAL_URL = "https://gnss-rtk.maaamet.ee/sbc"
@@ -24,6 +24,7 @@ LOCAL_TZ = local_tz()  # Europe/Tallinn unless TZ / PPK_TZ says otherwise
 GPS_UTC_LEAP_SECONDS = 18  # valid since 2017-01-01
 QUARTER = timedelta(minutes=15)
 RINEX_RETENTION_DAYS = 90  # the portal offers RINEX / Virtual RINEX for the last 90 days only
+PHASE_GAP_FAIL_S = 30  # base without carrier phase for longer than this during a flight: not worth processing
 
 
 def rinex_days_left(first_obs_gpst: datetime, now: datetime | None = None) -> int:
@@ -245,6 +246,21 @@ class Check:
     ok: bool
     level: str  # PASS / WARN / FAIL
     message: str
+    kind: str = ""  # "phase": the carrier phase check, a FAIL means the base file itself is incomplete
+
+
+def phase_check(base_obs: Path, hdr: RinexHeader, first: datetime, last: datetime, what: str) -> Check:
+    """Carrier phase in the base epochs a rover span uses (a 1 s margin: RTKLIB pairs each rover epoch with the
+    nearest base epoch). A short gap only costs the photos in it (WARN); a long one makes processing pointless."""
+    gaps = phase_gaps(base_obs, first - timedelta(seconds=1), last + timedelta(seconds=1), hdr)
+    if not gaps:
+        return Check(True, "PASS", f"carrier phase in every base epoch of the {what} span", "phase")
+    secs = sum(n for _, _, n in gaps) * (hdr.interval or 1.0)
+    ranges = ", ".join(f"{a:%H:%M:%S} - {b:%H:%M:%S}" for a, b, _ in gaps[:3]) + (f" and {len(gaps) - 3} more" if len(gaps) > 3 else "")
+    msg = f"carrier phase missing in the base for {secs:.0f} s of the {what} span ({ranges} GPST): RTK is impossible there"
+    if secs < PHASE_GAP_FAIL_S:
+        return Check(False, "WARN", msg, "phase")
+    return Check(False, "FAIL", msg + "; the file is incomplete", "phase")
 
 
 def check_base(base_obs: Path, flight: Flight | None, antex: Path | None = None,
@@ -285,6 +301,7 @@ def check_base(base_obs: Path, flight: Flight | None, antex: Path | None = None,
             checks.append(Check(covers, "PASS" if covers else "FAIL",
                                 f"{what} span {span_local(f_first, f_last)} ({f_first:%H:%M:%S} - {f_last:%H:%M:%S} GPST) is "
                                 f"{'covered' if covers else 'NOT covered'} by the base file"))
+            checks.append(phase_check(base_obs, hdr, f_first, f_last, what))
             rover_llh = None
             if flight is not None:
                 mrk = parse_mrk(flight.mrk)
