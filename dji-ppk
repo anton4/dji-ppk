@@ -871,7 +871,7 @@ def _table_lines(rows: list[dict], ticked: list[bool], cursor: int, width: int) 
                                                                          "photos": "waiting for photos", "expired": "expired",
                                                                          "survey": "base point: needs RINEX + static survey"}.get(r["next"], r["next"])
         if r["next"] == "reprocess":
-            status = "needs reprocessing (inputs changed)"
+            status = f"needs reprocessing: {r.get('why') or 'inputs changed'}"
         reason = why_not(r)
         if reason and not t and reason != "done" and selectable(r):  # unselectable: the status already says why
             status += f"  [skipped: {reason}]"

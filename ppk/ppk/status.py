@@ -35,6 +35,7 @@ class FolderStatus:
     rinex_days_left: int | None = None
     accuracy: str = ""  # "H 41 cm→0.4 cm  V 21 cm→0.6 cm": typical photo error as flown (on-board RTK) → after PPK (RTKLIB estimate)
     kind: str = "flight"  # "flight" (OBS/NAV/MRK sessions) or "basepoint" (D-RTK 3 raw logs to survey)
+    why: str = ""  # with next == "reprocess": the reasons, for the launcher's status column
 
     @property
     def count_text(self) -> str:
@@ -89,6 +90,7 @@ def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None,
     newest_input = max(p.stat().st_mtime for p in inputs)
     summary_path = find_summary(directory) or results_dir(directory) / "summary.json"
     result, nxt = "not processed", NEXT_PROCESS
+    why: list[str] = []
     if summary_path.exists():
         try:
             s = json.loads(summary_path.read_text())
@@ -102,18 +104,20 @@ def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None,
             sessions_done = len(s.get("sessions", [s.get("rover_obs")]))
             rows_then = s.get("geo_txt_rows") or 0
             if summary_path.stat().st_mtime < newest_input or sessions_done != len(flights):
-                result += " (outdated)"
-                nxt = NEXT_REPROCESS
+                why.append("outdated")
             elif photos > rows_then:
-                result += f" (photos arrived since: {photos} present)"
-                nxt = NEXT_REPROCESS
-            else:
-                nxt = NEXT_DONE
+                why.append(f"photos arrived since: {photos} present")
             if summary_path.parent == directory:  # old layout: accuracy.txt & co next to the photos break WebODM
-                result += f" (old layout: reports not in {RESULTS_DIR}/)"
-                nxt = NEXT_REPROCESS
+                why.append(f"old layout: reports not in {RESULTS_DIR}/")
+            if "geo_accuracy" not in s:
+                # processed before geo.txt carried per-photo accuracy: ODM then weighs every photo, float and
+                # code-only ones too, by WebODM's single gps-accuracy. An explicit --no-geo-accuracy run is left alone.
+                why.append("geo.txt has no accuracy columns")
+            result += "".join(f" ({w})" for w in why)
+            nxt = NEXT_REPROCESS if why else NEXT_DONE
         except (OSError, ValueError):
             result, nxt = "summary.json unreadable", NEXT_REPROCESS
+            why = ["summary.json unreadable"]
     if photos < expected:
         result += f"; {expected - photos} of {expected} photos not in the folder yet"
         if nxt in (NEXT_DONE, NEXT_PROCESS):
@@ -128,7 +132,8 @@ def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None,
         result = f"MRK has no exposure times ({untimed}): PPK impossible, use the on-board RTK positions"
         nxt = NEXT_NO_TIMES
     accuracy = accuracy_text(summary_path) if summary_path.exists() else ""
-    return FolderStatus(directory.name, str(directory), len(flights), photos, flown, base, base_ok, result, nxt, days_left, accuracy)
+    return FolderStatus(directory.name, str(directory), len(flights), photos, flown, base, base_ok, result, nxt, days_left, accuracy,
+                        why=", ".join(why) if nxt == NEXT_REPROCESS else "")
 
 
 def untimed_mrk(flights: list[Flight]) -> str:

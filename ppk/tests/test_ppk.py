@@ -520,15 +520,25 @@ def test_folder_status_next_step(tmp_path):
     (d / "ppk").mkdir()
     (d / "ppk" / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 5, "events": {"fix": 5, "mrk": 5}}))
     st = folder_status(d, flights, None)
-    assert st.next == "done" and "5 rows" in st.result
+    assert st.next == "reprocess" and "no accuracy columns" in st.result  # a result from before the columns existed
+    assert st.why == "geo.txt has no accuracy columns"
+    (d / "ppk" / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 5, "geo_accuracy": False,
+                                                       "events": {"fix": 5, "mrk": 5}}))
+    assert folder_status(d, flights, None).next == "done"  # an explicit --no-geo-accuracy run is left alone
+    (d / "ppk" / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 5, "geo_accuracy": True,
+                                                       "events": {"fix": 5, "mrk": 5}}))
+    st = folder_status(d, flights, None)
+    assert st.next == "done" and "5 rows" in st.result and st.why == ""
     time.sleep(0.01); os.utime(d / "DJI_a.MRK", None)  # input newer than the result
     st = folder_status(d, flights, None)
-    assert st.next == "reprocess" and "outdated" in st.result
-    (d / "ppk" / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 3, "events": {"fix": 5, "mrk": 5}}))
+    assert st.next == "reprocess" and "outdated" in st.result and st.why == "outdated"
+    (d / "ppk" / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 3, "geo_accuracy": True,
+                                                       "events": {"fix": 5, "mrk": 5}}))
     st = folder_status(d, flights, None)
     assert st.next == "reprocess" and "photos arrived" in st.result  # processed with 3 photos, 5 are here now
     (d / "DJI_20260912100505_0006_V.JPG").unlink()
-    (d / "ppk" / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 4, "events": {"fix": 5, "mrk": 5}}))
+    (d / "ppk" / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 4, "geo_accuracy": True,
+                                                       "events": {"fix": 5, "mrk": 5}}))
     st = folder_status(d, load_flights(d), None)
     assert st.next == "photos" and "1 of 5 photos not in the folder yet" in st.result
     assert "DJI_x" in format_status([st])
@@ -638,7 +648,7 @@ def test_status_reports_float_photos(tmp_path):
         (d / f"DJI_20260912100505_{i:04d}_V.JPG").write_bytes(b"")
     (d / "base.26o").write_text((FIX / "base_header.26o").read_text() + "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 08 29 59.0000000  0  1\n")
     (d / "base.26n").write_text("")
-    (d / "ppk").mkdir(); (d / "ppk" / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 5, "events": {"fix": 3, "mrk": 5, "float": 2, "other": 0, "unsolved": 0}}))
+    (d / "ppk").mkdir(); (d / "ppk" / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 5, "geo_accuracy": True, "events": {"fix": 3, "mrk": 5, "float": 2, "other": 0, "unsolved": 0}}))
     st = folder_status(d, load_flights(d), None)
     assert st.next == "done" and "3/5 fixed, 2 float (not cm-accurate)" in st.result
 

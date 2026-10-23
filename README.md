@@ -90,7 +90,7 @@ Without a terminal (pipes, Windows) the menu falls back to a typed version.
 |---|---|---|
 | `order` | needs RINEX + processing | no base file covers every session, or the base has no navigation files ([why](#notes-and-pitfalls)) |
 | `process` | needs processing | base present, no result yet |
-| `reprocess` | needs reprocessing (inputs changed) | an input file, the base or the photo set is newer than the result, or the folder still has the old layout (reports next to the photos) |
+| `reprocess` | needs reprocessing: *reason* | an input file, the base or the photo set is newer than the result, the folder still has the old layout (reports next to the photos), or its `geo.txt` was written before it carried per-photo accuracy columns |
 | `photos` | waiting for photos | fewer photos in the folder than camera events in the MRK: the copy is not finished |
 | `expired` | expired | flown more than 90 days ago and no base file in the folder: ESTPOS has no RINEX for it any more |
 | `survey` | base point: needs RINEX + static survey | a D-RTK 3 base point folder, see [Known base point](#known-base-point-survey-the-d-rtk-3-once-fly-without-ppk) |
@@ -166,7 +166,8 @@ With `PPK_IN_PLACE=0` the same layout is written to `/data/out/<folder>/` instea
 - **Per-photo accuracy replaces WebODM's `gps-accuracy` option.** Every `geo.txt` row carries its own horizontal and
   vertical accuracy (twice RTKLIB's std, never below 2/3 cm for a fix, 15/30 cm for float, 1/2 m otherwise), so float
   and code-only photos are down-weighted; `gps-accuracy` then only matters for photos without those columns. Folders
-  processed earlier keep the old 4-column `geo.txt` until they are processed again.
+  processed earlier keep the old 4-column `geo.txt` until they are processed again; they show as `reprocess`
+  ("geo.txt has no accuracy columns"), so `./dji-ppk run --all` updates them all.
 - **Coordinate frame:** EUREF-EST97 (Estonia's ETRS89, the frame of L-EST97 and the cadastre), inherited from the
   ESTPOS base. `geo.txt` says `EPSG:4326` on purpose: ODM/PROJ applies no datum shift between the two, so the model's
   "WGS84 UTM 35N" is numerically ETRS89 / UTM 35N (EPSG:25835) and lines up with the cadastre at the centimetre level.

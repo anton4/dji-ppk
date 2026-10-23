@@ -167,7 +167,8 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
         "events": {"mrk": len(mrk), "solved": len(matched), "unsolved": len(unmatched),
                    "fix": sum(1 for e in matched if e.q == 1), "float": sum(1 for e in matched if e.q == 2),
                    "other": sum(1 for e in matched if e.q not in (1, 2)), "other_q": other_q(matched)},
-        "geo_txt_rows": n_geo, "images_missing": len(missing_images), "seconds": round(time.time() - t0, 1),
+        "geo_txt_rows": n_geo, "geo_accuracy": geo_accuracy,
+        "images_missing": len(missing_images), "seconds": round(time.time() - t0, 1),
         "base_nav_files": [p.name for p in base_navs], "rover_nav_stale": sorted(stale),
         "outputs": {"events_csv": csv_path.name, "geo_txt": f"{prefix}geo.txt" if prefix else "../geo.txt", "trajectory_pos": res.pos_path.name,
                     "events_pos": res.events_path.name, "rtklib_log": f"{prefix}rtklib.log", "conf": conf_used.name},
@@ -297,7 +298,7 @@ def merge_summaries(name: str, summaries: list[dict], n_geo: int) -> dict:
     traj_fix = sum(s["trajectory"].get("fix", 0) for s in summaries)
     return {
         "flight": name, "sessions": [s["rover_obs"] for s in summaries], "session_summaries": summaries,
-        "events": events, "geo_txt_rows": n_geo,
+        "events": events, "geo_txt_rows": n_geo, "geo_accuracy": all(s.get("geo_accuracy") for s in summaries),
         "trajectory": {"fix": traj_fix, "total": traj_total},
         "trajectory_fix_ratio": round(traj_fix / traj_total, 4) if traj_total else 0.0,
         "images_missing": sum(s["images_missing"] for s in summaries),
