@@ -147,7 +147,7 @@ DJI_202610021701_041_site/
 
 | file | content |
 |---|---|
-| `geo.txt` | WebODM/ODM geo file: `EPSG:4326`, then `<image> <lon> <lat> <ellipsoidal height>` per photo (camera position) |
+| `geo.txt` | WebODM/ODM geo file: `EPSG:4326`, then `<image> <lon> <lat> <ellipsoidal height> nan nan nan <H> <V>` per photo (camera position; `nan` keeps the gimbal angles from the photo, `H`/`V` are the horizontal/vertical accuracy in m that ODM weights the photo by; `--no-geo-accuracy` writes only the first four columns) |
 | `ppk/accuracy.txt` | the short table printed at the end of a run: typical and worst photo error as flown and after PPK |
 | `ppk/processing.log` | the whole console output of the run (steps, warnings, all reports), plain text without colors |
 | `ppk/summary.json` | counts, fix ratios, inputs, versions, RTKLIB standard deviations, on-board RTK vs PPK statistics, per-session summaries |
@@ -163,6 +163,10 @@ With `PPK_IN_PLACE=0` the same layout is written to `/data/out/<folder>/` instea
 - **Upload the photos and `geo.txt` together.** WebODM (NodeODM) takes every uploaded `.txt` other than `geo.txt` and
   `image_groups.txt` for a GCP file, which is why all other outputs live in `ppk/`. Folders processed by an older
   version, with the reports next to the photos, show as `reprocess`; processing them again removes the old copies.
+- **Per-photo accuracy replaces WebODM's `gps-accuracy` option.** Every `geo.txt` row carries its own horizontal and
+  vertical accuracy (twice RTKLIB's std, never below 2/3 cm for a fix, 15/30 cm for float, 1/2 m otherwise), so float
+  and code-only photos are down-weighted; `gps-accuracy` then only matters for photos without those columns. Folders
+  processed earlier keep the old 4-column `geo.txt` until they are processed again.
 - **Coordinate frame:** EUREF-EST97 (Estonia's ETRS89, the frame of L-EST97 and the cadastre), inherited from the
   ESTPOS base. `geo.txt` says `EPSG:4326` on purpose: ODM/PROJ applies no datum shift between the two, so the model's
   "WGS84 UTM 35N" is numerically ETRS89 / UTM 35N (EPSG:25835) and lines up with the cadastre at the centimetre level.
@@ -501,7 +505,7 @@ Inside the containers the flights directory is mounted at `/data/flights` (read-
 
 ```sh
 docker compose --profile cli run --rm ppk status /data/flights [--json]
-docker compose --profile cli run --rm ppk process /data/flights/<folder> [--conf f] [--set k=v] [--geo-accuracy] [--fixed-only] [--keep-work] [--no-in-place --out-dir /data/out --name x]
+docker compose --profile cli run --rm ppk process /data/flights/<folder> [--conf f] [--set k=v] [--no-geo-accuracy] [--fixed-only] [--keep-work] [--no-in-place --out-dir /data/out --name x]
 docker compose --profile cli run --rm ppk estpos-window /data/flights/<folder>
 docker compose --profile cli run --rm ppk check-base /data/flights/<folder>/<zip> --flight /data/flights/<folder>
 docker compose --profile cli run --rm ppk compare /data/flights/<folder> "/data/flights/<folder>/<name>_events.pos"

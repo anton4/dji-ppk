@@ -73,7 +73,7 @@ def _parse_overrides(items: list[str] | None) -> dict[str, str]:
 # ----------------------------------------------------------------------------- process
 
 def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(DEFAULT_CONF),
-                   overrides: dict[str, str] | None = None, geo_accuracy: bool = False,
+                   overrides: dict[str, str] | None = None, geo_accuracy: bool = True,
                    fixed_only: bool = False, keep_work: bool = False, extra_nav: list[Path] | None = None,
                    prefix: str = "", matched_out: list | None = None) -> dict:
     """Process one session. geo.txt goes into `out_dir`, everything else into its RESULTS_DIR subfolder.
@@ -180,14 +180,16 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
         verdict += f"; {ev['float']} float, {other_text(ev['other_q'])}, {ev['unsolved']} unsolved"
     log.info("%s", ui.ok(verdict) if fixed_pct >= 99 else ui.warn(verdict) if fixed_pct >= 95 else ui.bad(verdict))
     if ev["float"] and not fixed_only:
-        log.warning("%d photos have only a float solution (decimetre-level); they are in geo.txt too. "
-                    "Use --fixed-only to leave them out, or fix the cause: %s", ev["float"],
+        log.warning("%d photos have only a float solution (decimetre-level); they are in geo.txt too" +
+                    (", down-weighted by their accuracy columns. " if geo_accuracy else ". ")
+                    + "Use --fixed-only to leave them out, or fix the cause: %s", ev["float"],
                     "the base has no navigation files, so GPS/BeiDou were not used" if not base_navs and stale
                     else "check sky view / base coverage")
     if ev["other"] and not fixed_only:
         # RTKLIB counts only satellites with carrier phase in ns: a code-only (dgps) solution shows 0 of them
-        log.warning("%s photos have no carrier-phase solution (decimetres to metres off); they are in geo.txt too. "
-                    "Use --fixed-only to leave them out", other_text(ev["other_q"]))
+        log.warning("%s photos have no carrier-phase solution (decimetres to metres off); they are in geo.txt too" +
+                    (", down-weighted by their accuracy columns. " if geo_accuracy else ". ")
+                    + "Use --fixed-only to leave them out", other_text(ev["other_q"]))
 
     quality = solution_quality(matched, len(mrk), traj.rows)
     summary["quality"] = quality
@@ -256,7 +258,7 @@ def _no_base_help(flights, base_dir: str | None) -> str:
 
 
 def process_sessions(flights: list[Flight], bases: list[Path], out_dir: Path, conf: Path = Path(DEFAULT_CONF),
-                     overrides: dict[str, str] | None = None, geo_accuracy: bool = False, fixed_only: bool = False,
+                     overrides: dict[str, str] | None = None, geo_accuracy: bool = True, fixed_only: bool = False,
                      keep_work: bool = False, extra_nav: list[Path] | None = None) -> dict:
     """Process every session of a flight day and, with more than one, merge them into one geo.txt / events.csv /
     summary.json / accuracy.txt (per-session files keep the session stem as prefix)."""
@@ -933,7 +935,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--name", help="output sub-directory name (default: flight folder name; ignored with --in-place)")
     s.add_argument("--conf", default=DEFAULT_CONF, help="RTKLIB configuration file")
     s.add_argument("--set", action="append", metavar="KEY=VALUE", help="override an RTKLIB option (repeatable)")
-    s.add_argument("--geo-accuracy", action="store_true", help="add horizontal/vertical accuracy columns to geo.txt")
+    s.add_argument("--geo-accuracy", action=argparse.BooleanOptionalAction, default=True,
+                   help="write per-photo accuracy columns to geo.txt, which ODM uses to weight each photo (default on)")
     s.add_argument("--fixed-only", action="store_true", help="only write Q=1 photos to geo.txt")
     s.add_argument("--keep-work", action="store_true", help="keep the work directory (event-injected RINEX etc.)")
     s.set_defaults(func=cmd_process)
@@ -954,7 +957,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--conf", default=DEFAULT_CONF)
     s.add_argument("--set", action="append", metavar="KEY=VALUE")
     s.add_argument("--poll", type=int)
-    s.add_argument("--geo-accuracy", action="store_true")
+    s.add_argument("--geo-accuracy", action=argparse.BooleanOptionalAction, default=True,
+                   help="write per-photo accuracy columns to geo.txt, which ODM uses to weight each photo (default on)")
     s.add_argument("--fixed-only", action="store_true")
     s.add_argument("--once", action="store_true", help="scan once and exit (for tests)")
     s.set_defaults(func=cmd_watch)

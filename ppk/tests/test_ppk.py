@@ -15,7 +15,7 @@ from ppk.estpos import ceil_quarter, floor_quarter, gpst_to_utc, plan_order
 from ppk.events import write_obs_with_events
 from ppk.mrk import parse_mrk
 from ppk.offsets import apply_ned_offset, ned_difference
-from ppk.outputs import CameraEvent, match_events
+from ppk.outputs import CameraEvent, match_events, write_geo_txt
 from ppk.pos import read_pos
 from ppk.rinex import ecef_to_llh, llh_to_ecef, read_header, scan_obs_span
 from ppk.timeutil import format_rinex3_event, gps_to_datetime, parse_rinex3_epoch, datetime_to_gps
@@ -1030,3 +1030,50 @@ def test_incomplete_base_set_aside_and_new_project_name(tmp_path):
     again = _project_names(folder, 1, None, 1)
     assert again == [[again[0][0]]] and again[0][0].endswith("-r1") and len(again[0][0]) <= 30 and again[0][0] != first
     assert all(n[0].endswith(f"-r2-{i}") and len(n[0]) <= 30 for i, n in enumerate(_project_names(folder, 2, None, 2), 1))
+
+
+def _geo_event(image, q, sdn, sde, sdu):
+    return CameraEvent(id=1, image=image, time=datetime(2026, 10, 2, 12, 0, 0), tow=0.0, week=2435, lat=58.1, lon=26.5,
+                       ellh=100.0, q=q, ns=20, sdn=sdn, sde=sde, sdu=sdu, ratio=9.0, ant_lat=0.0, ant_lon=0.0, ant_h=0.0,
+                       off_n_mm=0.0, off_e_mm=0.0, off_v_mm=0.0, mrk_lat=0.0, mrk_lon=0.0, mrk_ellh=0.0, mrk_q=1)
+
+
+def _odm_geo_parse(path):
+    """Replica of ODM's GeoFile parse (opendm/geo.py): yaw/pitch/roll from cols 5-7 (any NaN -> all None), accuracies from 8-9."""
+    out = {}
+    for line in Path(path).read_text().splitlines()[1:]:
+        p = line.split()
+        ypr = (None, None, None)
+        if len(p) >= 7:
+            ypr = tuple(float(x) for x in p[4:7])
+            if any(math.isnan(x) for x in ypr):
+                ypr = (None, None, None)
+        h, v = (float(p[7]), float(p[8])) if len(p) >= 9 else (None, None)
+        out[p[0]] = (float(p[3]), ypr, h, v)
+    return out
+
+
+def test_geo_txt_accuracy_columns_and_floors(tmp_path):
+    evs = [_geo_event("a.JPG", 1, 0.004, 0.003, 0.006),    # fix, below floor: 2*0.005=0.010 -> 0.020, 0.012 -> 0.030
+           _geo_event("b.JPG", 1, 0.020, 0.015, 0.040),    # fix, above floor: 2*0.025=0.050, 0.080
+           _geo_event("c.JPG", 2, 0.05, 0.05, 0.10),       # float: 2*hypot=0.141 -> 0.15, 0.20 -> 0.30
+           _geo_event("d.JPG", 2, 0.30, 0.40, 0.50),       # float, above floor: 1.000, 1.000
+           _geo_event("e.JPG", 5, 0.10, 0.10, 0.10)]       # other Q: 1.0 / 2.0
+    p = tmp_path / "geo.txt"
+    assert write_geo_txt(p, evs, with_accuracy=True) == 5
+    lines = p.read_text().splitlines()
+    assert lines[0] == "EPSG:4326"
+    assert all(len(l.split()) == 9 and l.split()[4:7] == ["nan"] * 3 for l in lines[1:])
+    got = _odm_geo_parse(p)
+    for name, (h, v) in {"a.JPG": (0.02, 0.03), "b.JPG": (0.05, 0.08), "c.JPG": (0.15, 0.30),
+                         "d.JPG": (1.0, 1.0), "e.JPG": (1.0, 2.0)}.items():
+        z, ypr, gh, gv = got[name]
+        assert z == 100.0 and ypr == (None, None, None)
+        assert gh == pytest.approx(h, abs=1e-9) and gv == pytest.approx(v, abs=1e-9)
+
+
+def test_geo_txt_without_accuracy_has_four_columns(tmp_path):
+    p = tmp_path / "geo.txt"
+    write_geo_txt(p, [_geo_event("a.JPG", 1, 0.004, 0.003, 0.006)], with_accuracy=False)
+    assert len(p.read_text().splitlines()[1].split()) == 4
+    assert _odm_geo_parse(p)["a.JPG"][2:] == (None, None)

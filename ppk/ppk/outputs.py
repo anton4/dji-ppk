@@ -140,8 +140,24 @@ def read_events_csv(path: Path) -> list[CameraEvent]:
     return out
 
 
+# Accuracy floors (H, V in m) per RTKLIB quality flag. RTKLIB's formal std (4-6 mm on fixed photos) is far tighter
+# than the real 1-3 cm, and ODM itself doubles DJI's XMP RtkStd for the same reason; the floors stop float and
+# code-only photos from carrying fix weight in the bundle adjustment.
+FLOOR_H = {1: 0.02, 2: 0.15}
+FLOOR_V = {1: 0.03, 2: 0.30}
+FLOOR_H_OTHER, FLOOR_V_OTHER = 1.0, 2.0
+
+
+def geo_accuracy(e: CameraEvent) -> tuple[float, float]:
+    """(horizontal, vertical) accuracy in m for one photo: twice RTKLIB's std, never below the floor for its Q."""
+    return (max(2 * math.hypot(e.sdn, e.sde), FLOOR_H.get(e.q, FLOOR_H_OTHER)),
+            max(2 * e.sdu, FLOOR_V.get(e.q, FLOOR_V_OTHER)))
+
+
 def write_geo_txt(path: Path, events: list[CameraEvent], with_accuracy: bool = False, fixed_only: bool = False) -> int:
-    """WebODM/ODM geo.txt: 'EPSG:4326' then '<image> <lon> <lat> <ellh> [horiz_acc vert_acc]' per image."""
+    """WebODM/ODM geo.txt: 'EPSG:4326' then '<image> <lon> <lat> <ellh>' per image. With accuracy the line is
+    '<image> <lon> <lat> <ellh> nan nan nan <H> <V>': ODM reads accuracy only from columns 8-9 (after yaw pitch roll),
+    and NaN angles make it keep the gimbal angles from the photo's XMP."""
     n = 0
     with open(path, "w") as fh:
         fh.write("EPSG:4326\n")
@@ -152,7 +168,8 @@ def write_geo_txt(path: Path, events: list[CameraEvent], with_accuracy: bool = F
                 continue
             line = f"{e.image} {e.lon:.9f} {e.lat:.9f} {e.ellh:.4f}"
             if with_accuracy:
-                line += f" {math.hypot(e.sdn, e.sde):.3f} {e.sdu:.3f}"
+                h, v = geo_accuracy(e)
+                line += f" nan nan nan {h:.3f} {v:.3f}"
             fh.write(line + "\n")
             n += 1
     return n
