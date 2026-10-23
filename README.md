@@ -216,14 +216,14 @@ against a Virtual RINEX, but is not implemented here.
 
 PPK uses only the drone's own raw observations (`.OBS`) and the ESTPOS Virtual RINEX; the base the drone listened to
 during the flight takes no part in it. Any NTRIP correction stream can therefore replace the D-RTK 3 and its PPP
-calibration, for example a community base on [rtk2go.com](http://rtk2go.com:2101/SNIP::STATUS) (free, needs mobile
-data on the controller), and the photo positions after PPK stay the same:
+calibration, for example ESTPOS's own network RTK or a community base on
+[rtk2go.com](http://rtk2go.com:2101/SNIP::STATUS) (free), and the photo positions after PPK stay the same:
 
-| | D-RTK 3 calibrated by PPP + RINEX PPK | NTRIP base (e.g. rtk2go) + RINEX PPK |
-|---|---|---|
-| **Setup on site** | PPP calibration, ~20–25 min to settle | connect in Pilot 2: minutes; needs mobile data |
-| **Positions written during the flight** | 30–40 cm off | depends on the base: unknown until measured |
-| **Photo positions after PPK** | ~1–3 cm, EUREF-EST97 | ~1–3 cm, EUREF-EST97: the same |
+| | D-RTK 3 calibrated by PPP + RINEX PPK | ESTPOS network RTK + RINEX PPK | community base (e.g. rtk2go) + RINEX PPK |
+|---|---|---|---|
+| **Setup on site** | PPP calibration, ~20–25 min to settle | connect in Pilot 2: minutes; needs mobile data | the same |
+| **Positions written during the flight** | 30–40 cm off | 0.3–0.7 cm horizontally, heights 8–9 cm low | depends on the base: 3 cm horizontally on the one measured |
+| **Photo positions after PPK** | ~1–3 cm, EUREF-EST97 | the same | the same |
 
 - **A community base is one hobby station, not a network:** the full distance to it counts (rule of thumb
   1 cm + 1 ppm horizontally, about twice that vertically). At ~30 km a fix takes longer and drops to float more often.
@@ -234,8 +234,18 @@ data on the controller), and the photo positions after PPK stay the same:
 - **None of this reaches the PPK result.** The on-board RTK vs PPK report measures the base: its "RTK base offset" is
   how far that mountpoint is from EUREF-EST97. Only photos with an RTK fix count, so a base that rarely fixes says
   little. Without PPK the flight inherits the base's error, and the owner can change the base at any time.
-- **Not yet verified here:** that the drone still writes the `.OBS`/`.NAV`/`.MRK` files when flying on NTRIP; check
-  the first such flight.
+- **Verified on ESTPOS's NTRIP service** (six flights, August 2026, connected in Pilot 2): the drone writes the
+  `.OBS`/`.NAV`/`.MRK` with exposure times as usual, and every photo was fixed after PPK (RTKLIB 0.3–0.5 cm
+  horizontal). Their RTK base offset was 0.3–0.7 cm horizontally, against the decimetres of a PPP calibration, which
+  is how such a flight is recognised later: the files do not say which base the drone used. The drone's heights were
+  8–9 cm below the PPK on all six, close to the height difference in
+  [Which correction is applied](#known-base-point-survey-the-d-rtk-3-once-fly-without-ppk); with the base right, that
+  is a difference between DJI's RTK and the PPK, not a base error.
+- **Measured on a community base** (two flights on 2026-07-26, rtk2go as far as remembered): every photo had an RTK
+  fix during the flight and every photo was fixed after PPK (RTKLIB 0.4–0.6 cm horizontal), as with ESTPOS. The RTK
+  base offset was 3.1–3.5 cm horizontally, in the same direction on both flights: the base's own coordinate error,
+  far from the 0.5–0.9 m of a base in WGS84/ITRF. Its heights matched the ESTPOS flights. A third, 11-photo flight
+  that day pointed the other way: the ~17 cm on-board scatter does not average out over so few photos.
 
 ### Reference flight and engine settings
 
