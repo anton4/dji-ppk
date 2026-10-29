@@ -157,7 +157,18 @@ def geo_accuracy(e: CameraEvent) -> tuple[float, float]:
 def write_geo_txt(path: Path, events: list[CameraEvent], with_accuracy: bool = False, fixed_only: bool = False) -> int:
     """WebODM/ODM geo.txt: 'EPSG:4326' then '<image> <lon> <lat> <ellh>' per image. With accuracy the line is
     '<image> <lon> <lat> <ellh> nan nan nan <H> <V>': ODM reads accuracy only from columns 8-9 (after yaw pitch roll),
-    and NaN angles make it keep the gimbal angles from the photo's XMP."""
+    and NaN angles make it keep the gimbal angles from the photo's XMP.
+
+    A name written twice is refused: ODM and RealityScan keep one row and the photo whose row went missing falls
+    back on the drone's own RTK fix, decimetres off and held as tight as the rest."""
+    seen: dict[str, int] = {}
+    for e in events:
+        if e.image and not e.image.startswith("#"):
+            seen[e.image] = seen.get(e.image, 0) + 1
+    twice = sorted(name for name, k in seen.items() if k > 1)
+    if twice:
+        raise ValueError(f"{len(twice)} photo names belong to two camera events (first: {', '.join(twice[:3])}); "
+                         "the sessions' photos were not told apart, so geo.txt is not written")
     n = 0
     with open(path, "w") as fh:
         fh.write("EPSG:4326\n")

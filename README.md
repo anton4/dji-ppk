@@ -125,6 +125,9 @@ underlying `ppk` command ([Reference](#reference)).
 
 1. **Sessions.** A folder is one project. Battery swaps or a rain break give several OBS/NAV/MRK triplets, each with
    the photo index restarting at 0001; photos are assigned to their session by the capture time in their file name.
+   When two sessions are under 2 min apart, an index both of them use goes to the photo whose name time is closest
+   to that session's exposure time in the MRK. A geo.txt that names a photo twice is never written, and `status`
+   marks an older one for reprocessing.
 2. **Base file.** If a base file in the folder already covers every session and comes with navigation files, nothing is
    ordered. Otherwise one Virtual RINEX order spanning all sessions plus 5 min is placed at the mean photo position (a
    flight day longer than 6 h is split at the gaps between sessions) and validated after download: RINEX version,

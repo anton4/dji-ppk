@@ -1087,3 +1087,67 @@ def test_geo_txt_without_accuracy_has_four_columns(tmp_path):
     write_geo_txt(p, [_geo_event("a.JPG", 1, 0.004, 0.003, 0.006)], with_accuracy=False)
     assert len(p.read_text().splitlines()[1].split()) == 4
     assert _odm_geo_parse(p)["a.JPG"][2:] == (None, None)
+
+
+def test_sessions_closer_than_the_window_margin_keep_their_own_photos(tmp_path):
+    """2026-10-25: the next session started 62 s after the last photo, inside the 2 min margin, so both sessions'
+    photo 0001 passed each other's window; the later file won and 68 events got the next session's names."""
+    import re
+    import shutil
+    from ppk.discover import load_flights
+    text = (FIX / "sample.MRK").read_text()  # local 10:04:47-10:04:49 EEST
+    later = re.sub(r"^(\d+)\t([\d.]+)", lambda m: f"{m.group(1)}\t{float(m.group(2)) + 62:.6f}", text, flags=re.M)
+    for stem, mrk in (("DJI_20260912100446_0002_D", text), ("DJI_20260912100548_0002_D", later)):
+        shutil.copy(FIX / "sample.obs", tmp_path / f"{stem}.OBS")
+        (tmp_path / f"{stem}.MRK").write_text(mrk)
+        (tmp_path / f"{stem}.NAV").write_text("")
+    first = {1: "100447", 3: "100447", 4: "100448", 5: "100449", 6: "100449"}
+    second = {1: "100549", 3: "100549", 4: "100550", 5: "100551", 6: "100551"}
+    for names in (first, second):
+        for i, t in names.items():
+            (tmp_path / f"DJI_20260912{t}_{i:04d}_V.JPG").write_bytes(b"")
+    a, b = load_flights(tmp_path)
+    assert {i: p.name[12:18] for i, p in a.images.items()} == first
+    assert {i: p.name[12:18] for i, p in b.images.items()} == second
+
+
+def test_index_images_without_times_keeps_the_later_file(tmp_path):
+    for n in ("DJI_20260912100447_0001_V.JPG", "DJI_20260912100549_0001_V.JPG"):
+        (tmp_path / n).write_bytes(b"")
+    window = (datetime(2026, 9, 12, 10, 4, 47), datetime(2026, 9, 12, 10, 4, 49))
+    assert index_images(tmp_path, window)[1].name == "DJI_20260912100549_0001_V.JPG"
+    picked = index_images(tmp_path, window, {1: datetime(2026, 9, 12, 10, 4, 47, 155000)})
+    assert picked[1].name == "DJI_20260912100447_0001_V.JPG"
+
+
+def test_geo_txt_refuses_a_photo_named_twice(tmp_path):
+    p = tmp_path / "geo.txt"
+    with pytest.raises(ValueError, match="1 photo names belong to two camera events"):
+        write_geo_txt(p, [_geo_event("a.JPG", 1, 0.004, 0.003, 0.006), _geo_event("b.JPG", 1, 0.004, 0.003, 0.006),
+                          _geo_event("a.JPG", 1, 0.004, 0.003, 0.006)])
+    assert not p.exists()
+    assert write_geo_txt(p, [_geo_event("#0001", 1, 0.004, 0.003, 0.006), _geo_event("#0001", 1, 0.004, 0.003, 0.006)]) == 0
+
+
+def test_status_reprocesses_a_geo_txt_with_a_name_twice(tmp_path):
+    import shutil
+    import json
+    from ppk.discover import load_flights
+    from ppk.status import folder_status
+    d = tmp_path / "DJI_x"; d.mkdir()
+    shutil.copy(FIX / "sample.obs", d / "DJI_a.OBS"); shutil.copy(FIX / "sample.MRK", d / "DJI_a.MRK")
+    (d / "DJI_a.NAV").write_text("")
+    for i in (1, 3, 4, 5, 6):
+        (d / f"DJI_20260912100505_{i:04d}_V.JPG").write_bytes(b"")
+    base = d / "base.26o"
+    base.write_text((FIX / "base_header.26o").read_text() + "> 2026 09 12 06 30  0.0000000  0  1\n> 2026 09 12 08 29 59.0000000  0  1\n")
+    (d / "base.26n").write_text("")
+    (d / "ppk").mkdir()
+    (d / "ppk" / "summary.json").write_text(json.dumps({"rover_obs": "DJI_a.OBS", "geo_txt_rows": 5, "geo_accuracy": True,
+                                                       "events": {"fix": 5, "mrk": 5}}))
+    rows = [f"DJI_20260912100505_{i:04d}_V.JPG 26.5 58.1 100.0" for i in (1, 3, 4, 5, 6)]
+    (d / "geo.txt").write_text("EPSG:4326\n" + "\n".join(rows) + "\n")
+    assert folder_status(d, load_flights(d), None).next == "done"
+    (d / "geo.txt").write_text("EPSG:4326\n" + "\n".join(rows + rows[:2]) + "\n")
+    st = folder_status(d, load_flights(d), None)
+    assert st.next == "reprocess" and st.why == "geo.txt names 2 photos twice"

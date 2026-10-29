@@ -46,9 +46,15 @@ def image_timestamp(path: Path) -> datetime | None:
         return None
 
 
-def index_images(directory: Path, window: tuple[datetime, datetime] | None = None) -> dict[int, Path]:
+def index_images(directory: Path, window: tuple[datetime, datetime] | None = None,
+                 times: dict[int, datetime] | None = None) -> dict[int, Path]:
     """Photo index -> file. `window` (local times) keeps only photos taken in that span, which separates two
-    flight sessions stored in one folder: DJI restarts the index at 0001 for every session."""
+    flight sessions stored in one folder: DJI restarts the index at 0001 for every session.
+
+    The window has a margin, so a session that starts within it lets its first photos in too, sharing their
+    index with this session's. `times` (index -> local exposure time from this session's MRK) settles that:
+    the file whose name time is closest to the exposure wins. Without it the later file wins, which on
+    2026-10-25 gave a session's first 68 events the names of the next session's photos (started 62 s later)."""
     found: dict[int, dict[str, Path]] = {}
     for p in sorted(directory.iterdir()):
         if not p.is_file():
@@ -56,11 +62,16 @@ def index_images(directory: Path, window: tuple[datetime, datetime] | None = Non
         m = IMAGE_RE.search(p.name)
         if not m:
             continue
-        if window:
-            ts = image_timestamp(p)
-            if ts is not None and not (window[0] - SESSION_MARGIN <= ts <= window[1] + SESSION_MARGIN):
+        ts = image_timestamp(p)
+        if window and ts is not None and not (window[0] - SESSION_MARGIN <= ts <= window[1] + SESSION_MARGIN):
+            continue
+        idx, cam = int(m.group(1)), (m.group(2) or "").upper()
+        held = found.get(idx, {}).get(cam)
+        if held is not None and times and idx in times and ts is not None:
+            held_ts = image_timestamp(held)
+            if held_ts is not None and abs((held_ts - times[idx]).total_seconds()) <= abs((ts - times[idx]).total_seconds()):
                 continue
-        found.setdefault(int(m.group(1)), {})[(m.group(2) or "").upper()] = p
+        found.setdefault(idx, {})[cam] = p
     out: dict[int, Path] = {}
     for idx, cams in found.items():
         if PREFERRED_CAMERA in cams:
@@ -99,21 +110,21 @@ def find_flights(root: str | Path, recursive: bool = True, max_depth: int | None
         nav = _sibling(base, ".nav")
         mrk = _sibling(base, ".mrk")
         if nav and mrk:
-            flights.append(Flight(obs.parent, obs, nav, mrk, index_images(obs.parent, session_window(mrk))))
+            times = session_times(mrk)
+            window = (min(times.values()), max(times.values())) if times else None
+            flights.append(Flight(obs.parent, obs, nav, mrk, index_images(obs.parent, window, times)))
     return flights
 
 
-def session_window(mrk_path: Path) -> tuple[datetime, datetime] | None:
-    """Local time span of the camera events in a .MRK, for picking this session's photos."""
+def session_times(mrk_path: Path) -> dict[int, datetime] | None:
+    """Local exposure time per photo index of a .MRK, for picking this session's photos."""
     try:
         from .mrk import has_exposure_times, parse_mrk
         from .timeutil import gpst_to_local
         events = parse_mrk(mrk_path)
         if not events or not has_exposure_times(events):
             return None  # no usable times: count every photo of the folder
-        first = gpst_to_local(events[0].time).replace(tzinfo=None)
-        last = gpst_to_local(events[-1].time).replace(tzinfo=None)
-        return first, last
+        return {e.id: gpst_to_local(e.time).replace(tzinfo=None) for e in events}
     except Exception:  # noqa: BLE001 - unreadable MRK: fall back to all photos
         return None
 

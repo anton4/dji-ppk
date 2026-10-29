@@ -113,6 +113,10 @@ def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None,
                 # processed before geo.txt carried per-photo accuracy: ODM then weighs every photo, float and
                 # code-only ones too, by WebODM's single gps-accuracy. An explicit --no-geo-accuracy run is left alone.
                 why.append("geo.txt has no accuracy columns")
+            twice = geo_txt_duplicates(directory / "geo.txt")
+            if twice:
+                # written before the sessions' photos were told apart by exposure time (see index_images)
+                why.append(f"geo.txt names {twice} photos twice")
             result += "".join(f" ({w})" for w in why)
             nxt = NEXT_REPROCESS if why else NEXT_DONE
         except (OSError, ValueError):
@@ -134,6 +138,15 @@ def folder_status(directory: Path, flights: list[Flight], base_dir: Path | None,
     accuracy = accuracy_text(summary_path) if summary_path.exists() else ""
     return FolderStatus(directory.name, str(directory), len(flights), photos, flown, base, base_ok, result, nxt, days_left, accuracy,
                         why=", ".join(why) if nxt == NEXT_REPROCESS else "")
+
+
+def geo_txt_duplicates(path: Path) -> int:
+    """How many photo names geo.txt lists more than once (0 when it is missing or unreadable)."""
+    try:
+        names = [ln.split(None, 1)[0] for ln in path.read_text(errors="replace").splitlines()[1:] if ln.strip()]
+    except OSError:
+        return 0
+    return len(names) - len(set(names))
 
 
 def untimed_mrk(flights: list[Flight]) -> str:
