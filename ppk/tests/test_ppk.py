@@ -1151,3 +1151,16 @@ def test_status_reprocesses_a_geo_txt_with_a_name_twice(tmp_path):
     (d / "geo.txt").write_text("EPSG:4326\n" + "\n".join(rows + rows[:2]) + "\n")
     st = folder_status(d, load_flights(d), None)
     assert st.next == "reprocess" and st.why == "geo.txt names 2 photos twice"
+
+
+def test_realityscan_csv_has_fixed_photos_lat_first(tmp_path):
+    import csv
+    from ppk.outputs import write_realityscan_csv
+    p = tmp_path / "realityscan.csv"
+    evs = [_geo_event("a.JPG", 1, 0.004, 0.003, 0.006), _geo_event("b.JPG", 2, 0.05, 0.05, 0.10),
+           _geo_event("c.JPG", 5, 0.10, 0.10, 0.10), _geo_event("#0007", 1, 0.004, 0.003, 0.006)]
+    assert write_realityscan_csv(p, evs) == 1  # float, code-only and imageless events are left out
+    rows = list(csv.reader(p.open()))
+    assert rows == [["name", "lat", "lon", "alt"], ["a.JPG", "58.1000000000", "26.5000000000", "100.0000"]]
+    with pytest.raises(ValueError, match="so realityscan.csv is not written"):
+        write_realityscan_csv(p, [_geo_event("a.JPG", 1, 0.004, 0.003, 0.006)] * 2)

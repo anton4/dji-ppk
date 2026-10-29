@@ -159,16 +159,8 @@ def write_geo_txt(path: Path, events: list[CameraEvent], with_accuracy: bool = F
     '<image> <lon> <lat> <ellh> nan nan nan <H> <V>': ODM reads accuracy only from columns 8-9 (after yaw pitch roll),
     and NaN angles make it keep the gimbal angles from the photo's XMP.
 
-    A name written twice is refused: ODM and RealityScan keep one row and the photo whose row went missing falls
-    back on the drone's own RTK fix, decimetres off and held as tight as the rest."""
-    seen: dict[str, int] = {}
-    for e in events:
-        if e.image and not e.image.startswith("#"):
-            seen[e.image] = seen.get(e.image, 0) + 1
-    twice = sorted(name for name, k in seen.items() if k > 1)
-    if twice:
-        raise ValueError(f"{len(twice)} photo names belong to two camera events (first: {', '.join(twice[:3])}); "
-                         "the sessions' photos were not told apart, so geo.txt is not written")
+    A name written twice is refused (see `_one_row_per_photo`)."""
+    _one_row_per_photo(events, path.name)
     n = 0
     with open(path, "w") as fh:
         fh.write("EPSG:4326\n")
@@ -182,6 +174,42 @@ def write_geo_txt(path: Path, events: list[CameraEvent], with_accuracy: bool = F
                 h, v = geo_accuracy(e)
                 line += f" nan nan nan {h:.3f} {v:.3f}"
             fh.write(line + "\n")
+            n += 1
+    return n
+
+
+def _one_row_per_photo(events: list[CameraEvent], what: str) -> None:
+    """Raise when a photo name belongs to two camera events. ODM and RealityScan keep one row, and the photo whose
+    row went missing falls back on the drone's own RTK fix, decimetres off and held as tight as the rest."""
+    seen: dict[str, int] = {}
+    for e in events:
+        if e.image and not e.image.startswith("#"):
+            seen[e.image] = seen.get(e.image, 0) + 1
+    twice = sorted(name for name, k in seen.items() if k > 1)
+    if twice:
+        raise ValueError(f"{len(twice)} photo names belong to two camera events (first: {', '.join(twice[:3])}); "
+                         f"the sessions' photos were not told apart, so {what} is not written")
+
+
+REALITYSCAN_CSV = "realityscan.csv"
+
+
+def write_realityscan_csv(path: Path, events: list[CameraEvent]) -> int:
+    """RealityScan trajectory: 'name,lat,lon,alt', then one row per FIXED photo (camera position, ellipsoidal height).
+
+    It imports with Import Trajectory, format "Image Y/Lat X/Lon Z/Alt", comma, ignore first line, GPS (WGS 84).
+    RealityScan cannot read geo.txt (EPSG line, space separated, lon first, nan columns), and it holds every row to
+    the one accuracy set in that dialog. So float and code-only photos are left out: they keep their EXIF prior
+    instead of being pinned at fix accuracy. A name written twice is refused (see `_one_row_per_photo`)."""
+    _one_row_per_photo(events, path.name)
+    n = 0
+    with open(path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["name", "lat", "lon", "alt"])
+        for e in events:
+            if e.q != 1 or not e.image or e.image.startswith("#"):
+                continue
+            w.writerow([e.image, f"{e.lat:.10f}", f"{e.lon:.10f}", f"{e.ellh:.4f}"])
             n += 1
     return n
 

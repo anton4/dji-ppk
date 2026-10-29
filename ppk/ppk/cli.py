@@ -19,7 +19,7 @@ from .estpos import check_base, format_order, plan_order, plan_orders, plan_base
 from .events import write_obs_with_events
 from .mrk import has_exposure_times, parse_mrk
 from .offsets import ned_difference
-from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_summary, solution_quality, format_quality, rtk_vs_ppk, format_rtk_vs_ppk, format_in_short, results_dir, remove_legacy_outputs, other_q, other_text
+from .outputs import match_events, read_events_csv, write_events_csv, write_geo_txt, write_realityscan_csv, REALITYSCAN_CSV, write_summary, solution_quality, format_quality, rtk_vs_ppk, format_rtk_vs_ppk, format_in_short, results_dir, remove_legacy_outputs, other_q, other_text
 from .pos import read_pos
 from .rinex import prepare_obs, read_header, scan_obs_span, find_base_candidates, find_nav_files, stale_nav_systems, has_nav_files
 from .rtklib import rtklib_version, run_rnx2rtkp, write_conf
@@ -157,6 +157,7 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
     write_events_csv(csv_path, matched)
     geo_path = (res_dir if prefix else out_dir) / f"{prefix}geo.txt"
     n_geo = write_geo_txt(geo_path, matched, with_accuracy=geo_accuracy, fixed_only=fixed_only)
+    n_rs = None if prefix else write_realityscan_csv(res_dir / REALITYSCAN_CSV, matched)  # several sessions: merged only
     if matched_out is not None:
         matched_out.extend(matched)
     summary = {
@@ -167,11 +168,12 @@ def process_flight(flight: Flight, base: Path, out_dir: Path, conf: Path = Path(
         "events": {"mrk": len(mrk), "solved": len(matched), "unsolved": len(unmatched),
                    "fix": sum(1 for e in matched if e.q == 1), "float": sum(1 for e in matched if e.q == 2),
                    "other": sum(1 for e in matched if e.q not in (1, 2)), "other_q": other_q(matched)},
-        "geo_txt_rows": n_geo, "geo_accuracy": geo_accuracy,
+        "geo_txt_rows": n_geo, "geo_accuracy": geo_accuracy, **({} if n_rs is None else {"realityscan_rows": n_rs}),
         "images_missing": len(missing_images), "seconds": round(time.time() - t0, 1),
         "base_nav_files": [p.name for p in base_navs], "rover_nav_stale": sorted(stale),
         "outputs": {"events_csv": csv_path.name, "geo_txt": f"{prefix}geo.txt" if prefix else "../geo.txt", "trajectory_pos": res.pos_path.name,
-                    "events_pos": res.events_path.name, "rtklib_log": f"{prefix}rtklib.log", "conf": conf_used.name},
+                    "events_pos": res.events_path.name, "rtklib_log": f"{prefix}rtklib.log", "conf": conf_used.name,
+                    **({} if n_rs is None else {"realityscan_csv": REALITYSCAN_CSV})},
     }
     write_summary(res_dir / f"{prefix}summary.json", summary)
     ev = summary["events"]
@@ -279,6 +281,8 @@ def process_sessions(flights: list[Flight], bases: list[Path], out_dir: Path, co
     write_events_csv(res_dir / "events.csv", all_matched)
     n_geo = write_geo_txt(out_dir / "geo.txt", all_matched, with_accuracy=geo_accuracy, fixed_only=fixed_only)
     merged = merge_summaries(flights[0].name, summaries, n_geo)
+    merged["realityscan_rows"] = write_realityscan_csv(res_dir / REALITYSCAN_CSV, all_matched)
+    merged["outputs"]["realityscan_csv"] = REALITYSCAN_CSV
     write_summary(res_dir / "summary.json", merged)
     parts = []
     for fl in flights:

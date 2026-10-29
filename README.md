@@ -144,7 +144,7 @@ DJI_202610021701_041_site/
 ├── DJI_..._V.JPG, DJI_..._D.OBS/.NAV/.MRK, virt….zip   inputs
 ├── geo.txt                                             for WebODM: the only result next to the photos
 └── ppk/                                                everything else
-    ├── accuracy.txt  processing.log  summary.json  events.csv
+    ├── accuracy.txt  processing.log  summary.json  events.csv  realityscan.csv
     └── <session>_trajectory.pos  <session>_trajectory_events.pos  rtklib.log  rtklib_used.conf
 ```
 
@@ -155,6 +155,7 @@ DJI_202610021701_041_site/
 | `ppk/processing.log` | the whole console output of the run (steps, warnings, all reports), plain text without colors |
 | `ppk/summary.json` | counts, fix ratios, inputs, versions, RTKLIB standard deviations, on-board RTK vs PPK statistics, per-session summaries |
 | `ppk/events.csv` | per photo: image, GPST, camera lat/lon/h, Q, satellites, std, ratio, antenna lat/lon/h, MRK offsets, DJI RTK position |
+| `ppk/realityscan.csv` | RealityScan trajectory: `name,lat,lon,alt`, then one row per fixed photo (camera position, ellipsoidal height); see [Using the results in RealityScan](#using-the-results-in-realityscan) |
 | `ppk/<session>_trajectory.pos`, `…_trajectory_events.pos` | RTKLIB antenna trajectory (5 Hz) and the solutions at the exposure times |
 | `ppk/<session>_*` | several sessions only: per-session `events.csv`, `geo.txt`, `summary.json`, `accuracy.txt`, `rtklib.log`, `rtklib_used.conf` |
 | `ppk/compare_report.txt` | only when an Emlid Studio `*_events.pos` is in the folder: photo-by-photo comparison |
@@ -178,6 +179,21 @@ With `PPK_IN_PLACE=0` the same layout is written to `/data/out/<folder>/` instea
   plate motion. That is expected, not an error; no drift correction is applied.
 - **Heights** are GRS80 ellipsoidal. EH2000 heights need the EST-GEOID2017 separation (about 17–25 m), which is not
   applied here.
+
+### Using the results in RealityScan
+
+RealityScan cannot read `geo.txt`, so `ppk/realityscan.csv` holds the same camera positions in its own layout.
+
+1. WORKFLOW → Settings → Coordinate systems: project **epsg:4326 GPS (WGS 84)**. Never a geoid or EH2000 system: the
+   heights are ellipsoidal and would move by 17–25 m.
+2. Select all images under Inputs, then Import Trajectory with `ppk/realityscan.csv`: format **Image Y/Lat X/Lon
+   Z/Alt**, separator comma, ignore first line **yes**, coordinate system **GPS (WGS 84)**, position accuracy **0.02 /
+   0.02 / 0.03 m**.
+3. Check one photo's prior pose: it must equal the CSV, not the photo's EXIF.
+
+RealityScan holds every row to that one accuracy, and the file has no accuracy columns to loosen a row the way
+`geo.txt` does. So only fixed photos are in it; float and code-only ones keep their EXIF prior. Older results have no
+`realityscan.csv`: `./dji-ppk process <folder>` writes it in a few seconds per session.
 
 ## Accuracy
 
