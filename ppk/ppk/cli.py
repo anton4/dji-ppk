@@ -806,7 +806,7 @@ def cmd_process(a: argparse.Namespace) -> int:
         print(ui.ok(f"{flights[0].name}: {ev['fix']}/{ev['mrk']} photos fixed, geo.txt has {summary['geo_txt_rows']} rows")
               if ev["fix"] == ev["mrk"] else ui.warn(f"{flights[0].name}: {ev['fix']}/{ev['mrk']} photos fixed, {ev['unsolved']} unsolved, "
                                                      f"geo.txt has {summary['geo_txt_rows']} rows"))
-        print(ui.c(f"  in {out_dir}: geo.txt; in {results_dir(out_dir)}: events.csv, summary.json, accuracy.txt, {PROCESSING_LOG}", "dim"))
+        print(ui.c(f"  in {out_dir}: geo.txt; in {results_dir(out_dir)}: events.csv, {REALITYSCAN_CSV}, summary.json, accuracy.txt, {PROCESSING_LOG}", "dim"))
     return 0
 
 

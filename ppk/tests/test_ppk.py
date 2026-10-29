@@ -1106,9 +1106,10 @@ def test_sessions_closer_than_the_window_margin_keep_their_own_photos(tmp_path):
     for names in (first, second):
         for i, t in names.items():
             (tmp_path / f"DJI_20260912{t}_{i:04d}_V.JPG").write_bytes(b"")
+    (tmp_path / "DJI_20260912100451_0009_V.JPG").write_bytes(b"")  # no MRK event: the MRK lost it, 2 s after the last
     a, b = load_flights(tmp_path)
-    assert {i: p.name[12:18] for i, p in a.images.items()} == first
-    assert {i: p.name[12:18] for i, p in b.images.items()} == second
+    assert {i: p.name[12:18] for i, p in a.images.items()} == {**first, 9: "100451"}
+    assert {i: p.name[12:18] for i, p in b.images.items()} == second  # 58 s before b, in its margin, still not b's
 
 
 def test_index_images_without_times_keeps_the_later_file(tmp_path):

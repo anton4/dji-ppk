@@ -11,6 +11,7 @@ IMAGE_RE = re.compile(r"_(\d{4})(?:_([A-Z]))?\.(?:JPG|JPEG|DNG)$", re.I)
 IMAGE_TS_RE = re.compile(r"^DJI_(\d{14})_\d{4}", re.I)  # capture time (local) in the file name
 PREFERRED_CAMERA = "V"  # DJI suffixes: V visible, W wide, Z zoom, T thermal
 SESSION_MARGIN = timedelta(minutes=2)
+UNTIMED_SLACK = timedelta(seconds=5)  # a photo index with no exposure in the MRK: name time vs the session's span
 
 
 @dataclass
@@ -54,7 +55,10 @@ def index_images(directory: Path, window: tuple[datetime, datetime] | None = Non
     The window has a margin, so a session that starts within it lets its first photos in too, sharing their
     index with this session's. `times` (index -> local exposure time from this session's MRK) settles that:
     the file whose name time is closest to the exposure wins. Without it the later file wins, which on
-    2026-10-25 gave a session's first 68 events the names of the next session's photos (started 62 s later)."""
+    2026-10-25 gave a session's first 68 events the names of the next session's photos (started 62 s later).
+    With `times`, an index that has no exposure in this MRK is kept only within a few seconds of the session's
+    own span: otherwise the next session took the previous one's last 69 photos and the folder's photo count
+    read 1089 for 1020 photos."""
     found: dict[int, dict[str, Path]] = {}
     for p in sorted(directory.iterdir()):
         if not p.is_file():
@@ -66,6 +70,9 @@ def index_images(directory: Path, window: tuple[datetime, datetime] | None = Non
         if window and ts is not None and not (window[0] - SESSION_MARGIN <= ts <= window[1] + SESSION_MARGIN):
             continue
         idx, cam = int(m.group(1)), (m.group(2) or "").upper()
+        if window and times and idx not in times and ts is not None \
+                and not (window[0] - UNTIMED_SLACK <= ts <= window[1] + UNTIMED_SLACK):
+            continue
         held = found.get(idx, {}).get(cam)
         if held is not None and times and idx in times and ts is not None:
             held_ts = image_timestamp(held)
